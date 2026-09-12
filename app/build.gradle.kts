@@ -83,6 +83,14 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        // JVM unit tests run against the stubbed android.jar. Returning default
+        // values lets defensive code that calls e.g. android.util.Log.w inside a
+        // catch block keep working in tests instead of throwing "Method ... not
+        // mocked". Behaviour in the real app is unchanged.
+        unitTests.isReturnDefaultValues = true
+    }
+
 }
 
 dependencies {

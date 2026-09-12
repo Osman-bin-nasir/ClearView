@@ -1,5 +1,7 @@
 package com.muddassir.clearview.todo.data
 
+import com.muddassir.clearview.todo.model.TodoBehavior
+import com.muddassir.clearview.todo.model.TodoEvent
 import com.muddassir.clearview.todo.model.TodoItem
 import com.muddassir.clearview.todo.model.TodoType
 import org.junit.Assert.assertEquals
@@ -306,5 +308,126 @@ class TodoStatsTest {
         assertEquals(0, month.completed)
         assertEquals(1, month.futureScheduled)
         assertEquals(0, month.percent)
+    }
+
+    // ── Centralized scoring (attempted / time proportional) ──
+
+    @Test
+    fun `occurrence score rewards attempted and time based todos proportionally`() {
+        val normal = TodoItem(
+            id = "n", title = "n", startDateEpochDay = TODAY.toEpochDay(),
+            completions = mapOf(TODAY.toEpochDay() to 1L)
+        )
+        val attemptedDone = TodoItem(
+            id = "a", title = "a", startDateEpochDay = TODAY.toEpochDay(),
+            behavior = TodoBehavior.ATTEMPTED,
+            completions = mapOf(TODAY.toEpochDay() to 1L)
+        )
+        val attemptedOnly = TodoItem(
+            id = "ao", title = "ao", startDateEpochDay = TODAY.toEpochDay(),
+            behavior = TodoBehavior.ATTEMPTED,
+            events = listOf(TodoEvent.Attempted(1L, TODAY.toEpochDay()))
+        )
+        val timeHalf = TodoItem(
+            id = "th", title = "th", startDateEpochDay = TODAY.toEpochDay(),
+            behavior = TodoBehavior.TIME, targetDurationMinutes = 60,
+            completions = mapOf(TODAY.toEpochDay() to 1L),
+            events = listOf(TodoEvent.TimeAdded(2L, TODAY.toEpochDay(), 30))
+        )
+        val timeOver = TodoItem(
+            id = "to", title = "to", startDateEpochDay = TODAY.toEpochDay(),
+            behavior = TodoBehavior.TIME, targetDurationMinutes = 60,
+            completions = mapOf(TODAY.toEpochDay() to 1L),
+            events = listOf(TodoEvent.TimeAdded(2L, TODAY.toEpochDay(), 120))
+        )
+        val open = TodoItem(
+            id = "open", title = "open", startDateEpochDay = TODAY.toEpochDay()
+        )
+
+        assertEquals(10f, TodoStats.occurrenceScore(normal, TODAY), 0.001f)
+        assertEquals(5f, TodoStats.occurrenceScore(attemptedDone, TODAY), 0.001f)
+        assertEquals(5f, TodoStats.occurrenceScore(attemptedOnly, TODAY), 0.001f)
+        // 30 of 60 target minutes → half credit; over-target is capped at full.
+        assertEquals(5f, TodoStats.occurrenceScore(timeHalf, TODAY), 0.001f)
+        assertEquals(10f, TodoStats.occurrenceScore(timeOver, TODAY), 0.001f)
+        assertEquals(0f, TodoStats.occurrenceScore(open, TODAY), 0.001f)
+    }
+
+    @Test
+    fun `behavior counts split completed attempted and incomplete`() {
+        val items = listOf(
+            item("done", start = mon, end = mon, completions = mapOf(mon.toEpochDay() to at(mon, 8))),
+            TodoItem(
+                id = "attempt", title = "attempt", startDateEpochDay = mon.toEpochDay(),
+                endDateEpochDay = mon.toEpochDay(), behavior = TodoBehavior.ATTEMPTED,
+                events = listOf(TodoEvent.Attempted(1L, mon.toEpochDay()))
+            ),
+            item("missed", start = mon, end = mon)
+        )
+        // Wednesday: Mon is past.
+        val counts = TodoStats.behaviorCounts(items, mon, wed, today = wed)
+        assertEquals(1, counts.completed)
+        assertEquals(1, counts.attempted)
+        assertEquals(1, counts.incomplete)
+    }
+
+    @Test
+    fun `productivity summary exposes streaks, counts and week over week delta`() {
+        val done = listOf(
+            item(
+                "a", start = mon.minusDays(2), end = TODAY,
+                completions = mapOf(
+                    mon.minusDays(2).toEpochDay() to at(mon.minusDays(2), 9),
+                    mon.minusDays(1).toEpochDay() to at(mon.minusDays(1), 9),
+                    mon.toEpochDay() to at(mon, 9)
+                )
+            )
+        )
+        val summary = TodoStats.productivitySummary(done, TODAY)
+        assertEquals(3, summary.currentStreak)
+        assertEquals(3, summary.longestStreak)
+        assertEquals(1, summary.completed)   // this week (Monday) only
+        assertEquals(0, summary.attempted)
+        assertNotNull(summary.weekScore)
+    }
+
+    @Test
+    fun `heatmap level tracks the daily score intensity`() {
+        val done = item("a", start = TODAY, end = TODAY, completions = mapOf(TODAY.toEpochDay() to 1L))
+        val full = TodoStats.dayProductivity(listOf(done), TODAY)
+        assertEquals(1, full.completed)
+        assertEquals(4, full.level)
+
+        val future = item("b", start = TODAY.plusDays(1), end = TODAY.plusDays(1))
+        val empty = TodoStats.dayProductivity(listOf(future), TODAY)
+        assertEquals(0, empty.due)
+        assertEquals(0, empty.level)
+    }
+
+    @Test
+    fun `attempted and time todos raise the weekly score with partial credit`() {
+        val plainMiss = item("m", start = TODAY, end = TODAY)
+        val attempted = TodoItem(
+            id = "at", title = "at", startDateEpochDay = TODAY.toEpochDay(),
+            endDateEpochDay = TODAY.toEpochDay(), behavior = TodoBehavior.ATTEMPTED,
+            events = listOf(TodoEvent.Attempted(1L, TODAY.toEpochDay()))
+        )
+        val timeHalf = TodoItem(
+            id = "th", title = "th", startDateEpochDay = TODAY.toEpochDay(),
+            endDateEpochDay = TODAY.toEpochDay(), behavior = TodoBehavior.TIME,
+            targetDurationMinutes = 60,
+            completions = mapOf(TODAY.toEpochDay() to 1L),
+            events = listOf(TodoEvent.TimeAdded(2L, TODAY.toEpochDay(), 30))
+        )
+        val full = item("f", start = TODAY, end = TODAY, completions = mapOf(TODAY.toEpochDay() to at(TODAY, 8)))
+        val noCredit = TodoStats.weekStats(listOf(plainMiss), TODAY).score ?: 0
+        val attemptedCredit = TodoStats.weekStats(listOf(attempted), TODAY).score ?: 0
+        val timeCredit = TodoStats.weekStats(listOf(timeHalf), TODAY).score ?: 0
+        val fullCredit = TodoStats.weekStats(listOf(full), TODAY).score ?: 0
+        assertTrue("attempted ($attemptedCredit) should beat none ($noCredit)", attemptedCredit > noCredit)
+        assertTrue("time ($timeCredit) should beat none ($noCredit)", timeCredit > noCredit)
+        // Partial credit lands strictly between nothing and a full completion.
+        assertTrue(attemptedCredit in (noCredit + 1)..(fullCredit - 1))
+        assertTrue(timeCredit in (noCredit + 1)..(fullCredit - 1))
     }
 }

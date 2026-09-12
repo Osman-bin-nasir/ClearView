@@ -88,6 +88,25 @@ object TodoScheduler {
     }
 
     /**
+     * Cancels EVERY pending reminder of [todoId] for [epochDay] — every
+     * reminder index offset (0…[INDICES]-1), BOTH PendingIntent shapes, plus
+     * their scheduled-alarm and snooze records. Called the moment a
+     * (range-based) todo is completed, so no further alarm can possibly ring
+     * for that occurrence today — the completion is persisted FIRST by the
+     * caller, closing the race where a reschedule could revive a reminder.
+     */
+    fun cancelAllRemindersForTodo(context: Context, todoId: String, epochDay: Long) {
+        val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val store = TodoStore(context)
+        for (index in 0 until INDICES) {
+            alarm.cancel(broadcastPending(context, todoId, index, epochDay))
+            alarm.cancel(alarmActivityPending(context, todoId, index, epochDay))
+            store.clearScheduledAlarm(todoId, index)
+            store.clearSnoozedReminder(todoId, index)
+        }
+    }
+
+    /**
      * Cancels the recorded alarms of [item] WITHOUT touching its snooze
      * records — used by [rescheduleAll] so a still-pending snooze can be
      * re-armed by [scheduleNextForIndex] instead of silently reverting to the

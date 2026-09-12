@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlaylistAdd
@@ -107,12 +108,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.muddassir.clearview.R
 import com.muddassir.clearview.media.data.MediaLibraryStore
 import com.muddassir.clearview.media.data.MediaRepository
 import com.muddassir.clearview.media.data.UserPlaylistStore
@@ -172,6 +175,8 @@ fun MediaTab(
     onPlayAudio: (DownloadItem) -> Unit = {},
     /** Fired when the Media tab is shown (marks channel updates as seen). */
     onMediaOpened: () -> Unit = {},
+    /** Opens the Makkah &amp; Madinah live broadcasts (Haramayn Live shortcut). */
+    onOpenHaramaynLive: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -495,7 +500,9 @@ fun MediaTab(
     val channelVideos = remember(baseVideos, filterChannelId, feedIsPlaylist, feedIsUserPlaylist) {
         when {
             feedIsPlaylist || feedIsUserPlaylist -> baseVideos
-            filterChannelId == null -> baseVideos.filter { it.platform != MediaPlatform.INSTAGRAM }
+            // All Feed includes BOTH platforms — Instagram long videos are
+            // placed directly below the YouTube ones (see `longs` below).
+            filterChannelId == null -> baseVideos
             else -> baseVideos.filter { it.channelId == filterChannelId }
         }
     }
@@ -563,7 +570,10 @@ fun MediaTab(
         }
     }
     val shorts = searchResults.filter { it.isShort }
+    // YouTube long videos first, then Instagram long videos directly below them
+    // (stable sort preserves each group's newest-first order).
     val longs = searchResults.filterNot { it.isShort }
+        .sortedBy { if (it.platform == MediaPlatform.INSTAGRAM) 1 else 0 }
     val isSearching = searchActive && searchQuery.isNotBlank()
     val matchingChannels = remember(channels, searchQuery, isSearching) {
         if (!isSearching) emptyList()
@@ -650,6 +660,11 @@ fun MediaTab(
                     selected = feedIsUserPlaylist || feedIsPlaylist,
                     onClick = { showPlaylistsSheet = true }
                 )
+            }
+            // Haramayn Live: Makkah & Madinah in-app broadcasts, moved off the
+            // old bottom Live tab into this shortcut.
+            item(key = "haramayn") {
+                HaramaynLiveAvatar(onClick = onOpenHaramaynLive)
             }
             items(channels, key = { it.channelId }) { channel ->
                 ChannelAvatar(
@@ -1017,42 +1032,33 @@ fun MediaTab(
                                     showingCached = feedCached
                                 )
                             }
+                            // Instagram long videos use the SAME long-video
+                            // card format as YouTube and sit directly below them
+                            // (`longs` is ordered YouTube-first).
                             items(longs, key = { it.videoId }) { video ->
-                                if (video.platform == MediaPlatform.INSTAGRAM) {
-                                    InstagramMediaCard(
-                                        video = video,
-                                        onClick = { playLong(video) },
-                                        onHide = {
-                                            libraryStore.hideVideo(video)
-                                            libraryRevision++
-                                        },
-                                        progressStore = progressStore
-                                    )
-                                } else {
-                                    LongVideoCard(
-                                        video = video,
-                                        progressStore = progressStore,
-                                        isManual = libraryStore.isManuallyAdded(video.videoId),
-                                        downloadStatus = AudioDownloads.statusFor(video.videoId),
-                                        isOffline = AudioDownloads.isDownloaded(video.videoId),
-                                        onPlayOffline = { onPlayOffline(video) },
-                                        onClick = { playLong(video) },
-                                        onDownload = {
-                                            AudioDownloads.download(video, AudioDownloads.sourceFor(video))
-                                        },
-                                        onCancelDownload = { AudioDownloads.cancel(video.videoId) },
-                                        onDeleteDownload = { pendingDeleteDownload = video },
-                                        onHide = {
-                                            libraryStore.hideVideo(video)
-                                            libraryRevision++
-                                        },
-                                        onRemoveManual = {
-                                            libraryStore.removeManuallyAdded(video.videoId)
-                                            libraryRevision++
-                                        },
-                                        onAddToPlaylist = { pendingAddToPlaylist = video }
-                                    )
-                                }
+                                LongVideoCard(
+                                    video = video,
+                                    progressStore = progressStore,
+                                    isManual = libraryStore.isManuallyAdded(video.videoId),
+                                    downloadStatus = AudioDownloads.statusFor(video.videoId),
+                                    isOffline = AudioDownloads.isDownloaded(video.videoId),
+                                    onPlayOffline = { onPlayOffline(video) },
+                                    onClick = { playLong(video) },
+                                    onDownload = {
+                                        AudioDownloads.download(video, AudioDownloads.sourceFor(video))
+                                    },
+                                    onCancelDownload = { AudioDownloads.cancel(video.videoId) },
+                                    onDeleteDownload = { pendingDeleteDownload = video },
+                                    onHide = {
+                                        libraryStore.hideVideo(video)
+                                        libraryRevision++
+                                    },
+                                    onRemoveManual = {
+                                        libraryStore.removeManuallyAdded(video.videoId)
+                                        libraryRevision++
+                                    },
+                                    onAddToPlaylist = { pendingAddToPlaylist = video }
+                                )
                             }
                         }
                     }
@@ -1758,6 +1764,45 @@ private fun PlaylistsAvatar(selected: Boolean, onClick: () -> Unit) {
             overflow = TextOverflow.Ellipsis,
             color = if (selected) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * "Haramayn Live" shortcut at the start of the channel strip: opens the
+ * Makkah &amp; Madinah in-app live broadcasts (the functionality that used to
+ * live in the bottom Live tab).
+ */
+@Composable
+private fun HaramaynLiveAvatar(onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(64.dp).clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.linearGradient(listOf(Color(0xFF1B5E20), Color(0xFF43A047)))
+                )
+                .border(width = 2.dp, color = MaterialTheme.colorScheme.primary, shape = CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.LiveTv,
+                contentDescription = stringResource(R.string.haramayn_live),
+                tint = Color.White,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = stringResource(R.string.haramayn_live_short),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = MaterialTheme.colorScheme.primary
         )
     }
 }

@@ -1,6 +1,7 @@
 package com.muddassir.clearview.todo.data
 
 import com.muddassir.clearview.todo.model.ReminderConfig
+import com.muddassir.clearview.todo.model.TodoEvent
 import com.muddassir.clearview.todo.model.TodoItem
 import com.muddassir.clearview.todo.model.TodoPriority
 import com.muddassir.clearview.todo.model.TodoType
@@ -167,7 +168,7 @@ class TodoCodecTest {
     }
 
     @Test
-    fun `updated keeps applicable completions and createdAt but drops stale ones`() {
+    fun `editing preserves history and createdAt even for now-inapplicable days`() {
         val items = listOf(
             item("a", start = TODAY, end = TODAY, completions = mapOf(TODAY.toEpochDay() to 1L))
         )
@@ -179,27 +180,26 @@ class TodoCodecTest {
         assertEquals(1L, kept.completions[TODAY.toEpochDay()])
         assertEquals(items.first().createdAtEpochMillis, kept.createdAtEpochMillis)
 
-        // Moving the todo to tomorrow makes today's completion stale — it is
-        // dropped, so the todo can never appear struck-through in another tab.
+        // Moving the todo to tomorrow KEEPS today's historical completion —
+        // history is immutable, so editing never rewrites past scores/streaks.
         val moved = TodoCodec.updated(items, item("a", start = TODAY.plusDays(1), end = TODAY.plusDays(1)))
             .first()
-        assertTrue(moved.completions.isEmpty())
+        assertEquals(1L, moved.completions[TODAY.toEpochDay()])
     }
 
     @Test
-    fun `decode drops completions recorded on days the todo is not active on`() {
-        // The user's exact scenario: a temporary todo set for TOMORROW that
-        // carries a stale "completed today" entry (e.g. left behind after the
-        // plan was moved). It must never survive a load, or the card would
-        // render struck-through in All / Temporary.
+    fun `decode keeps every recorded completion (history is immutable)`() {
+        // A completion recorded on a day the plan no longer covers stays in the
+        // store — history/statistics queries read it, active views ignore it.
         val tomorrowStale = item(
             id = "t",
             start = TODAY.plusDays(1),
             end = TODAY.plusDays(1),
             completions = mapOf(TODAY.toEpochDay() to 1L)
         )
-        val healed = TodoCodec.decode(TodoCodec.encode(listOf(tomorrowStale))).first()
-        assertTrue(healed.completions.isEmpty())
+        val keptStale = TodoCodec.decode(TodoCodec.encode(listOf(tomorrowStale))).first()
+        assertEquals(1, keptStale.completions.size)
+        assertEquals(1L, keptStale.completions[TODAY.toEpochDay()])
 
         // A legit completion on an ACTIVE day is never touched.
         val today = item(
@@ -211,8 +211,7 @@ class TodoCodecTest {
         val kept = TodoCodec.decode(TodoCodec.encode(listOf(today))).first()
         assertEquals(1, kept.completions.size)
 
-        // Same for a permanent todo: a completion on a day outside its
-        // scheduled weekdays is stale and dropped.
+        // Same for a permanent todo: an out-of-schedule completion is kept too.
         val mwf = item(
             id = "p",
             type = TodoType.PERMANENT,
@@ -220,8 +219,40 @@ class TodoCodecTest {
             days = setOf(1, 3, 5),
             completions = mapOf(TODAY.plusDays(1).toEpochDay() to 3L) // Tuesday
         )
-        val healedPerm = TodoCodec.decode(TodoCodec.encode(listOf(mwf))).first()
-        assertTrue(healedPerm.completions.isEmpty())
+        val keptPerm = TodoCodec.decode(TodoCodec.encode(listOf(mwf))).first()
+        assertEquals(1, keptPerm.completions.size)
+    }
+
+    @Test
+    fun `removing a todo soft-deletes it and preserves all history`() {
+        val at = 1_700_000_000_000L
+        val items = listOf(
+            item("keep", start = TODAY, end = TODAY),
+            item(
+                "gone",
+                start = TODAY.minusDays(2),
+                end = TODAY.minusDays(1),
+                completions = mapOf(TODAY.minusDays(2).toEpochDay() to at)
+            )
+        )
+
+        val removed = TodoCodec.removed(items, "gone")
+        // The item is still in the store, marked deleted, with its history.
+        assertEquals(2, removed.size)
+        val deleted = removed.first { it.id == "gone" }
+        assertTrue(deleted.isDeleted)
+        assertEquals(at, deleted.completions[TODAY.minusDays(2).toEpochDay()])
+
+        // It disappears from the active lists...
+        assertEquals(listOf("keep"), TodoCodec.filter(removed, TodoFilter.ALL, TODAY).map { it.id })
+        // ...but its history is still counted for statistics.
+        assertEquals(1, TodoStats.weekStats(removed, TODAY.minusDays(2)).completed.coerceAtLeast(0))
+        assertTrue(TodoCodec.historyCompleted(removed, TODAY).any { it.item.id == "gone" })
+
+        // Soft deletion survives persistence.
+        val roundTrip = TodoCodec.decode(TodoCodec.encode(removed)).first { it.id == "gone" }
+        assertTrue(roundTrip.isDeleted)
+        assertEquals(at, roundTrip.completions[TODAY.minusDays(2).toEpochDay()])
     }
 
     @Test
@@ -367,15 +398,30 @@ class TodoCodecTest {
             item("doneToday", start = TODAY, end = TODAY,
                 completions = mapOf(TODAY.toEpochDay() to at)),
             item("missed", start = TODAY.minusDays(1), end = TODAY.minusDays(1)),
-            item("active", start = TODAY, end = TODAY)
+            item("active", start = TODAY, end = TODAY),
+            // Attempted + logged time must be wiped too, not just completions.
+            item("tried", start = TODAY, end = TODAY).copy(
+                events = listOf(
+                    TodoEvent.Attempted(1L, TODAY.toEpochDay()),
+                    TodoEvent.TimeAdded(2L, TODAY.toEpochDay(), 30)
+                )
+            )
         )
 
         // Reset is DESTRUCTIVE: the completion records are wiped (today's
         // count -> 0, progress -> 0%, score/stats reset) AND both history
         // watermarks hide every past occurrence — but the todos stay.
         val reset = TodoCodec.resetHistory(items, TODAY)
-        assertEquals(listOf("done", "doneToday", "missed", "active"), reset.map { it.id })
+        assertEquals(
+            listOf("done", "doneToday", "missed", "active", "tried"),
+            reset.map { it.id }
+        )
         assertTrue(reset.all { it.completions.isEmpty() })
+        // Attempt / logged-time events are wiped as well, so streaks, scores,
+        // the calendar and the heatmap genuinely reset.
+        assertTrue(reset.all { it.events.isEmpty() })
+        assertEquals(0, TodoStats.behaviorCounts(reset, TODAY, TODAY, TODAY).attempted)
+        assertEquals(0, TodoStats.behaviorCounts(reset, TODAY, TODAY, TODAY).productiveMinutes)
         assertFalse(TodoCodec.completedOn(reset.first { it.id == "doneToday" }, TODAY))
         assertEquals(0, TodoStats.dayStats(reset, TODAY).completed)
         assertTrue(TodoCodec.historySorted(reset, TODAY).isEmpty())
@@ -387,12 +433,37 @@ class TodoCodecTest {
                     it.missedClearedBefore == TODAY.toEpochDay() + 1
             }
         )
-        // The todos themselves are still fully intact and actionable.
+        // The todos themselves are still fully intact and actionable — only
+        // the history was wiped, never the plans.
         assertEquals(
             TODAY.minusDays(1).toEpochDay(),
             reset.first { it.id == "done" }.startDateEpochDay
         )
+        assertTrue(reset.any { it.id == "tried" })
         assertTrue(TodoCodec.canCompleteOn(reset.first { it.id == "active" }, TODAY, atMinutes(TODAY, 12 * 60)))
+    }
+
+    @Test
+    fun `editing and deleting never change the historical score`() {
+        val at = 1_700_000_000_000L
+        val done = item(
+            "score", start = TODAY, end = TODAY,
+            completions = mapOf(TODAY.toEpochDay() to at)
+        )
+        val before = TodoStats.weekStats(listOf(done), TODAY).score
+        assertTrue("a completed occurrence must produce a score", before != null)
+
+        // A pure plan edit (title/notes) keeps the schedule → the past score is
+        // byte-for-byte identical.
+        val edited = TodoCodec.updated(
+            listOf(done),
+            done.copy(title = "renamed", details = "new notes")
+        )
+        assertEquals(before, TodoStats.weekStats(edited, TODAY).score)
+
+        // Soft delete keeps the todo in history → the past score is identical.
+        val removed = TodoCodec.removed(listOf(done), done.id)
+        assertEquals(before, TodoStats.weekStats(removed, TODAY).score)
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.muddassir.clearview.todo.data
 
+import com.muddassir.clearview.todo.model.TodoBehavior
 import com.muddassir.clearview.todo.model.TodoItem
 import java.time.DayOfWeek
 import java.time.Instant
@@ -67,8 +68,8 @@ object TodoStats {
         val timeliness: Int,          // 0 when nothing has closed yet
         val timelinessMax: Int,       // 0 when excluded
         val closedItems: Int,         // occurrences whose due day has passed this week (completed or not)
-        val dueWeight: Int,           // Σ priority weights of all due occurrences
-        val doneWeight: Int,          // Σ priority weights of completed occurrences
+        val dueWeight: Float,         // Σ priority weights of all due occurrences
+        val doneWeight: Float,        // Σ priority weights × behaviour credit earned
         val overdueCount: Int,        // closed & uncompleted, still-active
         val missedCount: Int,         // closed & uncompleted, expired
         val total: Int                // 0..100
@@ -222,19 +223,21 @@ object TodoStats {
         // EXCLUDED — with the remaining weights rescaled — when their
         // denominator is 0. Nothing ever earns points for being empty.
         val breakdown = if (due > 0) {
-            var dueWeight = 0
-            var doneWeight = 0
+            var dueWeight = 0f
+            var doneWeight = 0f
             days.filter { it.date <= today }.forEach { day ->
                 items.forEach { item ->
                     if (TodoCodec.isActiveOn(item, day.date)) {
-                        dueWeight += item.priority.scoreWeight
-                        if (TodoCodec.completedOn(item, day.date)) {
-                            doneWeight += item.priority.scoreWeight
-                        }
+                        val weight = item.priority.scoreWeight
+                        dueWeight += weight
+                        // Behaviour-aware credit (completed 1.0×, ATTEMPTED 0.5×,
+                        // TIME minutes/target) — the same ratio as occurrenceScore,
+                        // so attempted and time-based todos lift the weekly score too.
+                        doneWeight += weight * creditFraction(item, day.date)
                     }
                 }
             }
-            val completionRaw = W_COMPLETION * (doneWeight.toFloat() / dueWeight)
+            val completionRaw = W_COMPLETION * (doneWeight / dueWeight)
             val consistencyRaw = if (daysWithDue > 0) {
                 W_CONSISTENCY * (activeDays.toFloat() / daysWithDue)
             } else 0f
@@ -356,5 +359,250 @@ object TodoStats {
             }
         }
         return bestStart to bestStart + 2
+    }
+
+    // ── Scoring (single source of truth) ───────────────────────────
+
+    /** Base points for one completed occurrence, before behavior weighting. */
+    const val BASE_POINTS = 10f
+
+    /**
+     * Behaviour credit for one occurrence as a fraction of full value, i.e.
+     * [occurrenceScore] normalized against [BASE_POINTS]: NORMAL completion
+     * 1.0, ATTEMPTED 0.5, TIME minutes/target (capped at 1.0). Callers multiply
+     * this by an occurrence's priority weight to keep every surface consistent.
+     */
+    fun creditFraction(item: TodoItem, day: LocalDate): Float =
+        (occurrenceScore(item, day) / BASE_POINTS).coerceIn(0f, 1f)
+
+    /**
+     * THE score for one occurrence — every UI and summary figure must use this
+     * so they can never disagree:
+     *  - completed NORMAL    → full base points
+     *  - completed ATTEMPTED → 50% partial credit
+     *  - completed TIME      → (minutes logged / target).coerceIn(0,1) × base
+     *  - attempted, not completed → 50% partial credit
+     *  - otherwise           → 0
+     */
+    fun occurrenceScore(
+        item: TodoItem,
+        day: LocalDate,
+        basePoints: Float = BASE_POINTS
+    ): Float {
+        if (TodoCodec.completedOn(item, day)) {
+            return when (item.behavior) {
+                TodoBehavior.NORMAL -> basePoints
+                TodoBehavior.ATTEMPTED -> basePoints * 0.5f
+                TodoBehavior.TIME -> {
+                    val target = item.targetDurationMinutes ?: 0
+                    if (target <= 0) basePoints
+                    else (TodoCodec.timeSpentOn(item, day).toFloat() / target)
+                        .coerceIn(0f, 1f) * basePoints
+                }
+            }
+        }
+        if (TodoCodec.isAttemptedOn(item, day)) return basePoints * 0.5f
+        return 0f
+    }
+
+    /** Total earned points across [from]..[to] (inclusive). */
+    fun earnedPoints(
+        items: List<TodoItem>,
+        from: LocalDate,
+        to: LocalDate,
+        basePoints: Float = BASE_POINTS
+    ): Float {
+        var total = 0f
+        var day = from
+        while (!day.isAfter(to)) {
+            items.forEach { item ->
+                if (TodoCodec.isActiveOn(item, day)) total += occurrenceScore(item, day, basePoints)
+            }
+            day = day.plusDays(1)
+        }
+        return total
+    }
+
+    /** Completed / attempted / incomplete counts over a range. */
+    data class BehaviorCounts(
+        val completed: Int,
+        val attempted: Int,
+        val incomplete: Int,
+        /** Minutes logged against TIME-behavior todos in the range. */
+        val productiveMinutes: Int
+    )
+
+    /**
+     * Behavior breakdown for [from]..[to]: completed occurrences, ATTEMPTED
+     * (marked attempted but not completed), and incomplete occurrences on days
+     * that have PASSED (a normal todo due today is still actionable, never
+     * incomplete) — plus the total minutes logged against TIME todos.
+     */
+    fun behaviorCounts(
+        items: List<TodoItem>,
+        from: LocalDate,
+        to: LocalDate,
+        today: LocalDate = LocalDate.now(),
+        nowMillis: Long = System.currentTimeMillis()
+    ): BehaviorCounts {
+        var completed = 0
+        var attempted = 0
+        var incomplete = 0
+        var minutes = 0
+        var day = from
+        while (!day.isAfter(to) && !day.isAfter(today)) {
+            items.forEach { item ->
+                if (!TodoCodec.isActiveOn(item, day)) return@forEach
+                minutes += TodoCodec.timeSpentOn(item, day)
+                when {
+                    TodoCodec.completedOn(item, day) -> completed++
+                    TodoCodec.isAttemptedOn(item, day) -> attempted++
+                    day < today || TodoCodec.intervalEnded(item, day, nowMillis) -> incomplete++
+                }
+            }
+            day = day.plusDays(1)
+        }
+        return BehaviorCounts(completed, attempted, incomplete, minutes)
+    }
+
+    /** Longest run of consecutive days with ≥1 completion in [from]..[to]. */
+    fun longestStreak(items: List<TodoItem>, from: LocalDate, to: LocalDate): Int {
+        var best = 0
+        var run = 0
+        var day = from
+        while (!day.isAfter(to)) {
+            run = if (items.any { TodoCodec.completedOn(it, day) }) run + 1 else 0
+            if (run > best) best = run
+            day = day.plusDays(1)
+        }
+        return best
+    }
+
+    /** The earliest day any todo started, or null when there are no todos. */
+    private fun firstActivityDay(items: List<TodoItem>): LocalDate? =
+        items.minOfOrNull { it.startDateEpochDay }?.let(LocalDate::ofEpochDay)
+
+    // ── Daily productivity (heatmap) ───────────────────────────────
+
+    /** One heatmap/stat day: raw behaviour counts plus the earned score. */
+    data class DayProductivity(
+        val date: LocalDate,
+        val due: Int,
+        val completed: Int,
+        val attempted: Int,
+        val incomplete: Int,
+        val productiveMinutes: Int,
+        val earnedPoints: Float,
+        val maxPoints: Float
+    ) {
+        val ratio: Float
+            get() = if (maxPoints > 0f) (earnedPoints / maxPoints).coerceIn(0f, 1f) else 0f
+
+        /** 0..4 intensity (LeetCode-style), from the day's earned score. */
+        val level: Int
+            get() = when {
+                ratio <= 0f -> 0
+                ratio < 0.25f -> 1
+                ratio < 0.5f -> 2
+                ratio < 0.75f -> 3
+                else -> 4
+            }
+    }
+
+    /** Raw productivity for one [day]. */
+    fun dayProductivity(
+        items: List<TodoItem>,
+        day: LocalDate,
+        nowMillis: Long = System.currentTimeMillis()
+    ): DayProductivity {
+        var due = 0
+        var completed = 0
+        var attempted = 0
+        var incomplete = 0
+        var minutes = 0
+        var earned = 0f
+        items.forEach { item ->
+            if (!TodoCodec.isActiveOn(item, day)) return@forEach
+            due++
+            minutes += TodoCodec.timeSpentOn(item, day)
+            earned += occurrenceScore(item, day)
+            when {
+                TodoCodec.completedOn(item, day) -> completed++
+                TodoCodec.isAttemptedOn(item, day) -> attempted++
+                TodoCodec.intervalEnded(item, day, nowMillis) -> incomplete++
+            }
+        }
+        return DayProductivity(
+            date = day,
+            due = due,
+            completed = completed,
+            attempted = attempted,
+            incomplete = incomplete,
+            productiveMinutes = minutes,
+            earnedPoints = earned,
+            maxPoints = due * BASE_POINTS
+        )
+    }
+
+    /** Productivity for every day in [days] (order preserved). */
+    fun productivityHeatmap(
+        items: List<TodoItem>,
+        days: List<LocalDate>,
+        nowMillis: Long = System.currentTimeMillis()
+    ): List<DayProductivity> = days.map { dayProductivity(items, it, nowMillis) }
+
+    // ── Consolidated productivity summary ──────────────────────────
+
+    /** Everything the unified Productivity dashboard renders. */
+    data class ProductivitySummary(
+        val today: LocalDate,
+        val currentStreak: Int,
+        val longestStreak: Int,
+        val weekScore: Int?,
+        val previousWeekScore: Int?,
+        /** Percentage change vs last week; null when either week is unscoreable. */
+        val scoreDeltaPercent: Int?,
+        val completed: Int,
+        val attempted: Int,
+        val incomplete: Int,
+        val productiveMinutes: Int,
+        val earnedPoints: Float
+    )
+
+    /**
+     * The single call behind the Productivity dashboard, so every number on
+     * screen agrees. Counts/points cover the current week (Monday→today); the
+     * previous-week score uses the FULL previous week.
+     */
+    fun productivitySummary(
+        items: List<TodoItem>,
+        today: LocalDate,
+        nowMillis: Long = System.currentTimeMillis()
+    ): ProductivitySummary {
+        val week = weekStats(items, today, nowMillis)
+        // The day before this Monday is last Sunday → weekStats scores the
+        // whole previous Monday..Sunday week (nothing within it is "future").
+        val prev = weekStats(items, mondayOf(today).minusDays(1), nowMillis)
+        val monday = mondayOf(today)
+        val counts = behaviorCounts(items, monday, monday.plusDays(6), today, nowMillis)
+        val first = firstActivityDay(items) ?: today
+        val delta = if (week.score != null && prev.score != null && prev.score!! > 0) {
+            ((week.score!! - prev.score!!) * 100f / prev.score!!).roundToInt()
+        } else {
+            null
+        }
+        return ProductivitySummary(
+            today = today,
+            currentStreak = week.streak,
+            longestStreak = longestStreak(items, first, today),
+            weekScore = week.score,
+            previousWeekScore = prev.score,
+            scoreDeltaPercent = delta,
+            completed = counts.completed,
+            attempted = counts.attempted,
+            incomplete = counts.incomplete,
+            productiveMinutes = counts.productiveMinutes,
+            earnedPoints = earnedPoints(items, monday, today)
+        )
     }
 }

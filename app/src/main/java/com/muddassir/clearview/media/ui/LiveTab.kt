@@ -1,12 +1,14 @@
 package com.muddassir.clearview.media.ui
 
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,8 +17,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -83,9 +89,15 @@ import kotlinx.coroutines.delay
 @Composable
 fun LiveTab(
     isLandscape: Boolean,
+    /** Called when the user leaves Haramayn Live (back arrow / system back). */
+    onExit: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+
+    // Haramayn Live is opened from the Media tab (no top-bar back button), so
+    // system back always exits it.
+    BackHandler(enabled = true) { onExit() }
     val streams = LiveStreamConfig.streams
 
     var selectedId by rememberSaveable { mutableStateOf(streams.first().id) }
@@ -166,6 +178,27 @@ fun LiveTab(
     val unavailable = state as? LiveState.Unavailable
 
     Column(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+
+        // ── Back affordance (portrait only): Haramayn Live is opened from the
+        // Media tab's shortcut, so it needs its own way back. Hidden in
+        // landscape fullscreen (system back still exits).
+        if (!isLandscape) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onExit) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+                Text(
+                    text = stringResource(R.string.haramayn_live),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
 
         // ── Channel selector: its OWN row, above the player, so the chips can
         // never overlap the player's mute/CC/settings icons. Horizontally

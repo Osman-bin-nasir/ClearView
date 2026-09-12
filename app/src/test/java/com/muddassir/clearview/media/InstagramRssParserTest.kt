@@ -19,7 +19,7 @@ class InstagramRssParserTest {
             <link>https://www.instagram.com/maherzainofficial</link>
             <description>Maher Zain's official Instagram posts</description>
             <image>
-              <url>https://cdn.example.com/avatar.jpg</url>
+              <url>https://scontent.cdninstagram.com/v/avatar.jpg</url>
               <title>maherzainofficial</title>
               <link>https://www.instagram.com/maherzainofficial</link>
             </image>
@@ -54,7 +54,7 @@ class InstagramRssParserTest {
         <feed xmlns="http://www.w3.org/2005/Atom">
           <title>maherzainofficial - Instagram Bridge</title>
           <link rel="alternate" type="text/html" href="https://www.instagram.com/maherzainofficial"/>
-          <logo>https://cdn.example.com/avatar.jpg</logo>
+          <logo>https://scontent.cdninstagram.com/v/avatar.jpg</logo>
           <entry>
             <title>New song release preview</title>
             <link rel="alternate" type="text/html" href="https://www.instagram.com/reel/C_jkl012/"/>
@@ -77,7 +77,7 @@ class InstagramRssParserTest {
         val result = InstagramRssParser.parse(sampleRss2Feed, "maherzainofficial")
         assertNotNull(result)
         assertEquals("maherzainofficial", result!!.username)
-        assertEquals("https://cdn.example.com/avatar.jpg", result.avatarUrl)
+        assertEquals("https://scontent.cdninstagram.com/v/avatar.jpg", result.avatarUrl)
         assertEquals(3, result.items.size)
 
         // Item 1: Reel
@@ -109,7 +109,7 @@ class InstagramRssParserTest {
         val result = InstagramRssParser.parse(sampleAtomFeed, "maherzainofficial")
         assertNotNull(result)
         assertEquals("maherzainofficial", result!!.username)
-        assertEquals("https://cdn.example.com/avatar.jpg", result.avatarUrl)
+        assertEquals("https://scontent.cdninstagram.com/v/avatar.jpg", result.avatarUrl)
         assertEquals(2, result.items.size)
 
         val reel = result.items[0]

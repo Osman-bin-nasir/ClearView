@@ -246,11 +246,12 @@ object TodoCodec {
             }.getOrDefault(emptyList()),
             isDeleted = o.optBoolean("isDeleted", false)
         )
-        return item.copy(
-            completions = item.completions.filterKeys { day ->
-                isActiveOn(item, LocalDate.ofEpochDay(day))
-            }
-        )
+        // HISTORY IS IMMUTABLE: completions recorded on a day the todo was
+        // active at the time are kept forever — even after the plan is later
+        // edited or the todo deleted. Destroying them here (the old behavior)
+        // silently rewrote history, breaking scores, streaks, the calendar and
+        // the heatmap. Historical views read the raw data; they never prune it.
+        return item
     }
 
     /** True when [item] is due on [day] (within its period, and a repeat day for permanent todos). */
@@ -384,26 +385,26 @@ object TodoCodec {
     }
 
     /**
-     * Replaces the todo with the same id. Completion history and created-at
-     * are preserved (the editor only edits the plan, never the record of
-     * what was done); updated-at is refreshed.
+     * Replaces the todo's PLAN with the same id. History is IMMUTABLE: the
+     * completion record, the attempts/time events and the created-at stamp are
+     * all preserved exactly (the editor only edits the plan, never the record
+     * of what was done); updated-at is refreshed.
      */
     fun updated(items: List<TodoItem>, item: TodoItem): List<TodoItem> =
-        updateWithCompletions(items, item, preserveCompletions = true)
+        replacePlan(items, item)
 
     /**
-     * Edit that treats a completed / missed todo as a NEW todo: the edited
-     * plan is applied, but the completion record is cleared — the todo leaves
-     * Completed history and becomes actionable again ("it becomes new"). Used
-     * when editing a completed card, where the user changed the plan.
+     * Edit of a completed / missed todo. Historical records (completions,
+     * attempts and time) are NEVER cleared — the old behavior wiped them,
+     * which destroyed history and changed past scores. Editing now only
+     * changes the plan.
      */
     fun editedAsNew(items: List<TodoItem>, item: TodoItem): List<TodoItem> =
-        updateWithCompletions(items, item, preserveCompletions = false)
+        replacePlan(items, item)
 
-    private fun updateWithCompletions(
+    private fun replacePlan(
         items: List<TodoItem>,
-        item: TodoItem,
-        preserveCompletions: Boolean
+        item: TodoItem
     ): List<TodoItem> =
         items.map { existing ->
             if (existing.id == item.id) {
@@ -422,20 +423,10 @@ object TodoCodec {
                     strictInterval = item.strictInterval,
                     behavior = item.behavior,
                     targetDurationMinutes = item.targetDurationMinutes,
-                    events = if (preserveCompletions) existing.events else emptyList(),
+                    // History is preserved verbatim — never pruned by an edit.
+                    events = existing.events,
+                    completions = existing.completions,
                     isDeleted = item.isDeleted,
-                    // Preserved completions are kept ONLY on days the new plan
-                    // is still active on — a completion on a day the edit made
-                    // inapplicable (e.g. completed today, then moved to
-                    // tomorrow) is stale data and is dropped, so the todo can
-                    // never show as struck-through in the wrong tab.
-                    completions = if (preserveCompletions) {
-                        existing.completions.filterKeys { day ->
-                            isActiveOn(item, LocalDate.ofEpochDay(day))
-                        }
-                    } else {
-                        emptyMap()
-                    },
                     updatedAtEpochMillis = System.currentTimeMillis()
                 )
             } else {
@@ -443,13 +434,24 @@ object TodoCodec {
             }
         }
 
-    /** Removes the todo entirely (its history is gone too). */
+    /**
+     * Deletes the todo by SOFT deletion: the item is marked [TodoItem.isDeleted]
+     * and stays in the store, so its completions, attempts, streaks, past
+     * scores, calendar entries and heatmap data remain permanently intact.
+     * Active queries hide it ([isArchived]); history and statistics keep
+     * counting it.
+     */
     fun removed(items: List<TodoItem>, id: String): List<TodoItem> =
-        items.filterNot { it.id == id }
+        items.map {
+            if (it.id == id) {
+                it.copy(isDeleted = true, updatedAtEpochMillis = System.currentTimeMillis())
+            } else {
+                it
+            }
+        }
 
-    /** Archives the todo by marking it deleted (preserves history). */
-    fun deletedOnly(items: List<TodoItem>, id: String): List<TodoItem> =
-        items.map { if (it.id == id) it.copy(isDeleted = true, updatedAtEpochMillis = System.currentTimeMillis()) else it }
+    /** Alias of [removed] — archives the todo by marking it deleted. */
+    fun deletedOnly(items: List<TodoItem>, id: String): List<TodoItem> = removed(items, id)
 
     /**
      * Marks [id] completed on [day] — STRICT completion, never a toggle: a
@@ -687,7 +689,11 @@ object TodoCodec {
         val item: TodoItem,
         val completedCount: Int,
         val missedCount: Int,
-        val lastOccurrence: LocalDate
+        val lastOccurrence: LocalDate,
+        /** ATTEMPTED occurrences (marked attempted, never completed). */
+        val attemptedCount: Int = 0,
+        /** Total minutes logged against a TIME-behavior todo. */
+        val totalMinutes: Int = 0
     )
 
     fun entry(
@@ -696,11 +702,27 @@ object TodoCodec {
         nowMillis: Long = System.currentTimeMillis()
     ): HistoryEntry {
         val (completed, missed) = occurrenceCounts(item, today, nowMillis)
+        // Aggregate the behavior history (attempts + logged minutes) over every
+        // applicable day up to today, so the History row can show its badges.
+        var attempted = 0
+        var minutes = 0
+        val last = (item.endDateEpochDay ?: today.toEpochDay()).coerceAtMost(today.toEpochDay())
+        var day = item.startDateEpochDay
+        while (day <= last) {
+            val date = LocalDate.ofEpochDay(day)
+            if (isActiveOn(item, date)) {
+                minutes += timeSpentOn(item, date)
+                if (isAttemptedOn(item, date)) attempted++
+            }
+            day++
+        }
         return HistoryEntry(
             item = item,
             completedCount = completed,
             missedCount = missed,
-            lastOccurrence = lastOccurrence(item, today) ?: today.minusDays(1)
+            lastOccurrence = lastOccurrence(item, today) ?: today.minusDays(1),
+            attemptedCount = attempted,
+            totalMinutes = minutes
         )
     }
 
@@ -813,7 +835,12 @@ object TodoCodec {
         val clearedBefore = today.toEpochDay() + 1
         return items.map {
             it.copy(
+                // Wipe EVERY historical record — completions, and the attempt /
+                // logged-time events too — so the counts, streaks, scores,
+                // calendar and heatmap all genuinely start from zero. (Clearing
+                // only completions left attempt/time statistics alive.)
                 completions = emptyMap(),
+                events = emptyList(),
                 completedClearedBefore = clearedBefore,
                 missedClearedBefore = clearedBefore
             )

@@ -214,6 +214,13 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Media notification dismissals: fired via setDeleteIntent when the
+             user swipes an update notification out of the tray, so it is
+             remembered as dismissed and can never be re-posted / stacked. -->
+        <receiver
+            android:name=".media.worker.NotificationDismissReceiver"
+            android:exported="false" />
+
         <!-- FileProvider: lets the native share sheet receive the generated
              Progress Card image (a cache file) without any storage permission. -->
         <provider

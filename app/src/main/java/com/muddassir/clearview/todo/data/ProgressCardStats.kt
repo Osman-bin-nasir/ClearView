@@ -182,8 +182,8 @@ object ProgressCardStats {
         var daysWithDue = 0
         var dataDays = 0
         // Priority-weighted completion (v2): High 3×, Medium 2×, Low 1×.
-        var dueWeight = 0
-        var doneWeight = 0
+        var dueWeight = 0f
+        var doneWeight = 0f
         // Completions on days that have already passed (closed items that did
         // NOT miss).
         var closedCompleted = 0
@@ -198,11 +198,14 @@ object ProgressCardStats {
                 if (TodoCodec.isActiveOn(item, day)) {
                     dayDue++
                     dueWeight += item.priority.scoreWeight
+                    // Behaviour-aware credit (completed 1.0×, ATTEMPTED 0.5×,
+                    // TIME minutes/target) so the card's score matches the
+                    // centralized occurrenceScore used everywhere else.
+                    doneWeight += item.priority.scoreWeight * TodoStats.creditFraction(item, day)
                     val completedNow = TodoCodec.completedOn(item, day)
                     if (completedNow) {
                         dayCompleted++
                         completed++
-                        doneWeight += item.priority.scoreWeight
                         if (epoch < todayEpoch) closedCompleted++
                     } else if (epoch <= todayEpoch) {
                         missed++
@@ -277,7 +280,7 @@ object ProgressCardStats {
         var breakdown: ScoreBreakdown? = null
         var score: Int? = null
         if (hasData) {
-            val completionRaw = 55f * (doneWeight.toFloat() / dueWeight)
+            val completionRaw = 55f * (doneWeight / dueWeight)
             val consistencyRaw = if (daysWithDue > 0) {
                 20f * (activeDays.toFloat() / daysWithDue)
             } else 0f

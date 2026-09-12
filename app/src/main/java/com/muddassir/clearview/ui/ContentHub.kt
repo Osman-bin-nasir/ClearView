@@ -13,12 +13,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Bookmark
+import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -87,7 +87,7 @@ import kotlinx.coroutines.withContext
  * verse state (verse, bookmark, refresh interval) plus the actions the top
  * bar can trigger (share / bookmark / copy / new verse / interval).
  */
-enum class ContentTab { QURAN, MEDIA, LIVE }
+enum class ContentTab { QURAN, MEDIA, FEED }
 
 class ContentHubState(appContext: Context) {
 
@@ -122,12 +122,21 @@ class ContentHubState(appContext: Context) {
     var mediaUpdatesLoading by mutableStateOf(false)
     // Number of updates the user hasn't seen yet (drives the Media-tab badge).
     var unreadMediaUpdates by mutableStateOf(0)
+    // Ids of the updates that were unread at the last refresh — drives the
+    // unread indicator in the notifications sheet (which may be opened after
+    // the badge was already cleared).
+    var unreadUpdateIds by mutableStateOf<Set<String>>(emptySet())
 
     // ── Quran notifications (new verse) ────────────────────────────
     var quranNotificationsEnabled by mutableStateOf(true)
 
     // ── Todo reminders (alarm notifications) ───────────────────────
     var todoNotificationsEnabled by mutableStateOf(true)
+
+    // Haramayn Live (Makkah & Madinah) opened from the Media tab's shortcut.
+    // Rendered as a full-screen overlay (its own embedded player) so it never
+    // interferes with the Media feed's composition slot.
+    var showHaramaynLive by mutableStateOf(false)
 
     // ── Top-bar sheets on the Quran tab (search / settings / notifications) ──
     var showSearchSheet by mutableStateOf(false)
@@ -229,20 +238,21 @@ class ContentHubState(appContext: Context) {
     fun refreshMediaUpdates() {
         scope.launch {
             mediaUpdatesLoading = true
-            val (updates, unread) = withContext(Dispatchers.IO) {
+            val (updates, unreadIds) = withContext(Dispatchers.IO) {
                 // Fresh installs start empty until the first background check;
                 // the one-time seed pre-fills from the cached feeds (never
                 // re-runs after the history has been written, so dismissals
                 // are never resurrected).
                 mediaRepository.ensureUpdatesHistorySeeded(mediaRepository.getSavedChannels())
                 val list = mediaRepository.getUpdatesHistory()
-                list to mediaRepository.countUnreadUpdates(list)
+                list to mediaRepository.unreadUpdateIds(list)
             }
             mediaUpdates = updates
-            unreadMediaUpdates = unread
+            unreadUpdateIds = unreadIds
+            unreadMediaUpdates = unreadIds.size
             mediaUpdatesLoading = false
             // Keep the launcher app-icon badge in sync with the unread count.
-            MediaBadge.setBadge(appContext, unread)
+            MediaBadge.setBadge(appContext, unreadIds.size)
         }
     }
 
@@ -307,6 +317,24 @@ class ContentHubState(appContext: Context) {
     }
 
     /**
+     * Removes EVERY update from the "Latest Updates" feed and the notification
+     * shade (the notifications sheet's "Clear all" action).
+     */
+    fun clearAllUpdates() {
+        scope.launch {
+            // Remove the OS notifications too (deterministic per-channel ids),
+            // so the shade and the launcher bubble follow the in-app feed.
+            mediaUpdates.forEach { MediaNotifier.cancelChannelNotification(appContext, it.channelId) }
+            withContext(Dispatchers.IO) { mediaRepository.clearAllUpdates() }
+            mediaUpdates = emptyList()
+            unreadUpdateIds = emptySet()
+            unreadMediaUpdates = 0
+            MediaNotifier.cancelSummary(appContext)
+            MediaBadge.setBadge(appContext, 0)
+        }
+    }
+
+    /**
      * Removes one update from the "Latest Updates" feed (persisted — it won't
      * come back on the next refresh).
      */
@@ -319,6 +347,7 @@ class ContentHubState(appContext: Context) {
             withContext(Dispatchers.IO) { mediaRepository.dismissUpdate(latestVideoId) }
             val updated = mediaUpdates.filterNot { it.latestVideoId == latestVideoId }
             mediaUpdates = updated
+            unreadUpdateIds = unreadUpdateIds - latestVideoId
             // All updates gone → the group summary in the shade must go too,
             // otherwise the launcher bubble lingers after clearing the feed.
             if (updated.isEmpty()) MediaNotifier.cancelSummary(appContext)
@@ -608,6 +637,13 @@ fun ContentHubTabContent(
                 onExit = { state.exitAudio() }
             )
 
+            // Haramayn Live (Makkah & Madinah) — opened from the Media tab's
+            // shortcut; replaces the tab content with the in-app live player.
+            state.showHaramaynLive -> LiveTab(
+                isLandscape = isLandscape,
+                onExit = { state.showHaramaynLive = false }
+            )
+
             state.selectedTab == ContentTab.QURAN -> QuranTab(
                 verse = state.verse,
                 isLoading = state.verseLoading,
@@ -629,10 +665,11 @@ fun ContentHubTabContent(
                 },
                 onPlayOffline = { video -> state.playAudio(video) },
                 onPlayAudio = { item -> state.playAudioItem(item) },
-                onMediaOpened = { state.markMediaUpdatesSeen() }
+                onMediaOpened = { state.markMediaUpdatesSeen() },
+                onOpenHaramaynLive = { state.showHaramaynLive = true }
             )
 
-            else -> LiveTab(isLandscape = isLandscape)
+            else -> ClearFeedScreen()
         }
     }
 }
@@ -773,7 +810,7 @@ fun ContentHubTopBar(
         )
 
         else -> TopAppBar(
-            title = { Text(stringResource(R.string.live_tab)) },
+            title = { Text(stringResource(R.string.clear_feed_tab)) },
             navigationIcon = {
                 if (onBack != null) {
                     IconButton(onClick = onBack) {
@@ -845,9 +882,9 @@ fun contentHubNavItems(): List<ContentHubNavItem> = listOf(
         stringResource(R.string.media_tab)
     ),
     ContentHubNavItem(
-        ContentTab.LIVE,
-        { Icon(Icons.Filled.LiveTv, contentDescription = null) },
-        stringResource(R.string.live_tab)
+        ContentTab.FEED,
+        { Icon(Icons.Outlined.DynamicFeed, contentDescription = null) },
+        stringResource(R.string.clear_feed_tab)
     )
 )
 

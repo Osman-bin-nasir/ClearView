@@ -71,7 +71,13 @@ object MediaNotifier {
         // can still be off — silently skip instead of throwing.
         if (!manager.areNotificationsEnabled()) return 0
 
-        updates.take(MAX_SHOWN).forEach { update ->
+        // A notification the user already swiped away must never be re-posted,
+        // duplicated or stacked by a later run. The dismissal is keyed by
+        // (channel, video), so a genuinely NEW upload still notifies.
+        val postable = updates.filterNot { update ->
+            NotificationStateStore.isDismissed(context, update.channelId, update.latestVideoId)
+        }
+        postable.take(MAX_SHOWN).forEach { update ->
             val notification = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_clearview)
                 .setContentTitle(
@@ -79,13 +85,39 @@ object MediaNotifier {
                 )
                 .setContentText(update.latestVideoTitle)
                 .setContentIntent(openAppIntent(context, update.channelId))
+                // Swiping the notification away records the dismissal so it can
+                // never come back.
+                .setDeleteIntent(dismissIntent(context, update.channelId, update.latestVideoId))
                 .setAutoCancel(true)
                 .build()
             // Deterministic per-channel id: dismissing an update in the app can
             // cancel exactly the notification that was posted for it.
             manager.notify(channelNotificationId(update.channelId), notification)
         }
-        return updates.size
+        return postable.size
+    }
+
+    /**
+     * Delete intent attached to every update notification: fires
+     * [NotificationDismissReceiver] when the user swipes the notification out
+     * of the shade, recording the dismissal in [NotificationStateStore].
+     */
+    private fun dismissIntent(
+        context: Context,
+        channelId: String,
+        videoId: String
+    ): PendingIntent {
+        val intent = Intent(context, NotificationDismissReceiver::class.java).apply {
+            action = NotificationDismissReceiver.ACTION_DISMISS
+            putExtra(NotificationDismissReceiver.EXTRA_CHANNEL_ID, channelId)
+            putExtra(NotificationDismissReceiver.EXTRA_VIDEO_ID, videoId)
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            "dismiss-$channelId|$videoId".hashCode() and 0x7FFFFFFF,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     /** Opens the app from a notification; a fresh task if it isn't running. */

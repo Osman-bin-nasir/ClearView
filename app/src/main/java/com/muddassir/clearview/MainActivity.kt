@@ -167,7 +167,7 @@ open class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class MainTab { QURAN, MEDIA, LIVE, BLOCK }
+private enum class MainTab { QURAN, MEDIA, FEED, BLOCK }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -288,7 +288,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     // restores them. Playback is never restarted because the activity doesn't
     // recreate on rotation (configChanges in the manifest).
     val isFullscreen =
-        (landscape && (hub.playingVideo != null || hub.selectedTab == ContentTab.LIVE)) ||
+        (landscape && (hub.playingVideo != null || hub.showHaramaynLive)) ||
             (hub.playerFullscreen && hub.playingVideo != null)
     ApplyImmersiveIfNeeded(isFullscreen)
 
@@ -409,7 +409,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
 private fun tabFor(tab: ContentTab): MainTab = when (tab) {
     ContentTab.QURAN -> MainTab.QURAN
     ContentTab.MEDIA -> MainTab.MEDIA
-    ContentTab.LIVE -> MainTab.LIVE
+    ContentTab.FEED -> MainTab.FEED
 }
 
 @Composable

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -93,6 +95,10 @@ import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.QuranJsonParser
 import com.muddassir.clearview.quran.model.QuranVerse
 import kotlinx.coroutines.Dispatchers
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1148,12 +1154,23 @@ fun NotificationsSheet(state: ContentHubState, onDismiss: () -> Unit) {
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 32.dp)
         ) {
-            Text(
-                text = stringResource(R.string.quran_notifications_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = stringResource(R.string.quran_notifications_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (state.mediaUpdates.isNotEmpty()) {
+                    TextButton(onClick = { state.clearAllUpdates() }) {
+                        Text(stringResource(R.string.media_update_clear_all))
+                    }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
             when {
                 state.mediaUpdatesLoading && state.mediaUpdates.isEmpty() -> {
                     Row(
@@ -1170,24 +1187,59 @@ fun NotificationsSheet(state: ContentHubState, onDismiss: () -> Unit) {
                     }
                 }
                 state.mediaUpdates.isEmpty() -> {
-                    Text(
-                        text = stringResource(R.string.media_no_updates_yet),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    // Elegant empty state: a soft icon, a title and a hint.
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                        ) {
+                            Icon(
+                                Icons.Outlined.Notifications,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(16.dp).size(28.dp)
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = stringResource(R.string.media_no_updates_title),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = stringResource(R.string.media_no_updates_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 else -> {
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                    val context = LocalContext.current
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 460.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
                         state.mediaUpdates.forEach { update ->
-                            NotificationRow(
+                            NotificationCard(
                                 update = update,
+                                unread = update.latestVideoId in state.unreadUpdateIds,
+                                relativeTime = relativeUpdateTime(
+                                    context,
+                                    update.publishedAtEpochMillis
+                                ),
                                 onClick = {
                                     onDismiss()
                                     state.playMediaUpdate(update)
                                 },
                                 onDismissUpdate = { state.dismissUpdate(it) }
                             )
+                            Spacer(Modifier.height(8.dp))
                         }
                     }
                 }
@@ -1196,46 +1248,114 @@ fun NotificationsSheet(state: ContentHubState, onDismiss: () -> Unit) {
     }
 }
 
-/** A single update row inside the notifications sheet. */
+/**
+ * One notification card inside the sheet: a clean rounded card with a subtle
+ * unread accent, a wrapping title/body, a relative timestamp and a per-item
+ * dismiss button.
+ */
 @Composable
-private fun NotificationRow(
+private fun NotificationCard(
     update: MediaChannelUpdate,
+    unread: Boolean,
+    relativeTime: String,
     onClick: () -> Unit,
     onDismissUpdate: (String) -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            Icons.Filled.PlayCircle,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(26.dp)
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (unread) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+            }
         )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-            Text(
-                text = stringResource(R.string.media_has_update, update.channelName),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (update.latestVideoTitle.isNotBlank()) {
-                Spacer(Modifier.height(1.dp))
-                Text(
-                    text = update.latestVideoTitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+            ) {
+                Icon(
+                    Icons.Filled.PlayCircle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(8.dp).size(22.dp)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = stringResource(R.string.media_has_update, update.channelName),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (unread) {
+                        Spacer(Modifier.width(6.dp))
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(8.dp)
+                        ) {}
+                    }
+                }
+                if (update.latestVideoTitle.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = update.latestVideoTitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (relativeTime.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = relativeTime,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            IconButton(onClick = { onDismissUpdate(update.latestVideoId) }) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.media_update_dismiss),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }
-        TextButton(onClick = { onDismissUpdate(update.latestVideoId) }) {
-            Text(stringResource(R.string.media_update_dismiss))
-        }
+    }
+}
+
+/**
+ * Compact relative timestamp: "Just now", "10m ago", "3h ago", "Yesterday",
+ * "4d ago", then a short date ("Aug 10").
+ */
+private fun relativeUpdateTime(context: Context, epochMillis: Long): String {
+    if (epochMillis <= 0L) return ""
+    val zone = ZoneId.systemDefault()
+    val then = Instant.ofEpochMilli(epochMillis).atZone(zone)
+    val dayDiff = LocalDate.now(zone).toEpochDay() - then.toLocalDate().toEpochDay()
+    val diff = System.currentTimeMillis() - epochMillis
+    return when {
+        diff < 60_000L -> context.getString(R.string.media_updates_relative_just_now)
+        diff < 3_600_000L -> "${diff / 60_000L}m ago"
+        dayDiff <= 0L -> "${(diff / 3_600_000L).coerceAtLeast(1L)}h ago"
+        dayDiff == 1L -> context.getString(R.string.media_updates_relative_yesterday)
+        dayDiff < 7L -> "${dayDiff}d ago"
+        else -> DateTimeFormatter.ofPattern("MMM d").format(then.toLocalDate())
     }
 }
 

@@ -61,6 +61,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -83,6 +84,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -109,6 +111,7 @@ import com.muddassir.clearview.media.model.MediaVideo
 import com.muddassir.clearview.media.model.UserPlaylist
 import com.muddassir.clearview.media.util.formatBytes
 import com.muddassir.clearview.media.util.formatEtaRemaining
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -413,10 +416,7 @@ fun VideoPlayerScreen(
     fun shareVideo() {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(
-                Intent.EXTRA_TEXT,
-                "Watch: ${video.title}\nhttps://www.youtube.com/watch?v=${video.videoId}"
-            )
+            putExtra(Intent.EXTRA_TEXT, "Watch: ${video.title}\n${shareUrlFor(video)}")
         }
         runCatching {
             context.startActivity(Intent.createChooser(send, "Share video"))
@@ -486,15 +486,70 @@ fun VideoPlayerScreen(
         // Vertical fullscreen (Shorts style) fills the whole portrait screen;
         // landscape is naturally full screen; otherwise a 16:9 box at the top.
         val isInstagram = video.platform == MediaPlatform.INSTAGRAM || video.videoId.startsWith("ig_")
+        // Portrait Instagram gets an ADAPTIVE box that matches the media's own
+        // orientation (9:16 for Reels / videos, 1:1 for image posts) instead of
+        // the fixed 16:9 frame that squeezed them, capped so the control panel
+        // below always stays reachable.
+        val instagramPortraitSize = instagramPortraitBoxSize(video)
+        // Fullscreen toggle shared by the top-right button and the Instagram
+        // controls overlay: portrait toggles the vertical viewer, landscape
+        // rotates back to portrait (playback never restarts).
+        val onFullscreenClick: () -> Unit = {
+            if (isLandscape) {
+                if (fullscreenVertical) onToggleFullscreen()
+                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            } else {
+                onToggleFullscreen()
+            }
+        }
         Box(
             modifier = when {
                 isLandscape || fullscreenVertical -> Modifier.fillMaxSize()
+                isInstagram -> instagramPortraitSize
                 else -> Modifier.fillMaxWidth().aspectRatio(16f / 9f)
             }
         ) {
             if (isInstagram) {
                 InstagramPlayer(
                     video = video,
+                    isLandscape = isLandscape,
+                    fullscreenVertical = fullscreenVertical,
+                    muted = isMuted,
+                    playbackRate = playbackRate,
+                    resumeFromSeconds = resumeFromSeconds,
+                    seekToken = seekToken,
+                    seekToSeconds = seekToSeconds,
+                    onToggleFullscreen = onFullscreenClick,
+                    onProgress = { currentSeconds, durationSeconds ->
+                        // Persist real playback progress so Instagram cards get
+                        // a progress bar / Watched badge and Continue Watching
+                        // resumes from the exact position.
+                        if (durationSeconds > 0) {
+                            val now = System.currentTimeMillis()
+                            val fraction = (currentSeconds / durationSeconds)
+                                .toFloat().coerceIn(0f, 1f)
+                            if (fraction >= 0.98f || now - lastProgressSavedAt >= 5_000L) {
+                                progressStore.setProgress(
+                                    video.videoId,
+                                    fraction,
+                                    currentSeconds.toLong(),
+                                    durationSeconds.toLong()
+                                )
+                                lastProgressSavedAt = now
+                            }
+                        }
+                    },
+                    onPlayerState = { _, ended ->
+                        if (ended) {
+                            progressStore.set(video.videoId, 1f)
+                            progressRevision++
+                        }
+                    },
+                    onMutedChange = { m ->
+                        isMuted = m
+                        playerPrefs.edit().putBoolean(KEY_MUTED, m).apply()
+                    },
+                    onRateChange = setPlaybackRate,
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -755,6 +810,25 @@ fun VideoPlayerScreen(
                         contentDescription = "Play",
                         tint = Color.White,
                         modifier = Modifier.padding(16.dp)
+                    )
+                }
+            }
+
+            // Speed badge: shows a non-default playback rate on the video so the
+            // current speed is obvious at a glance (Instagram has its own badge
+            // inside its controls overlay).
+            if (!isInstagram && playbackRate != 1.0) {
+                Surface(
+                    modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = Color.Black.copy(alpha = 0.5f)
+                ) {
+                    Text(
+                        text = formatRate(playbackRate),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
             }
@@ -1122,6 +1196,9 @@ private fun PlayerControlPanel(
 ) {
     val context = LocalContext.current
     var showMoreMenu by remember { mutableStateOf(false) }
+    // Custom playback speed (0.25×–5×, 0.05 steps) — opened from the speed menu.
+    var showCustomSpeedDialog by remember { mutableStateOf(false) }
+    var customSpeed by remember { mutableStateOf(playbackRate) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1335,6 +1412,15 @@ private fun PlayerControlPanel(
                             onClick = { onSpeedSelect(rate) }
                         )
                     }
+                    // Custom speed: up to 5× with 0.05 precision.
+                    DropdownMenuItem(
+                        text = { Text("Custom speed…") },
+                        onClick = {
+                            onSpeedMenuToggle()
+                            customSpeed = playbackRate
+                            showCustomSpeedDialog = true
+                        }
+                    )
                 }
             }
             PanelAction(
@@ -1458,6 +1544,44 @@ private fun PlayerControlPanel(
                 }
             }
         }
+
+    if (showCustomSpeedDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomSpeedDialog = false },
+            title = { Text("Playback speed") },
+            text = {
+                Column {
+                    Text(
+                        text = "Current: ${formatRate(customSpeed)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Slider(
+                        value = customSpeed.toFloat(),
+                        onValueChange = { customSpeed = it.toDouble() },
+                        valueRange = MIN_CUSTOM_SPEED.toFloat()..MAX_CUSTOM_SPEED.toFloat(),
+                        steps = (((MAX_CUSTOM_SPEED - MIN_CUSTOM_SPEED) / CUSTOM_SPEED_STEP).toInt() - 1)
+                            .coerceAtLeast(0)
+                    )
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        Text("0.25×", style = MaterialTheme.typography.labelSmall)
+                        Spacer(Modifier.weight(1f))
+                        Text("5×", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onSpeedSelect((Math.round(customSpeed * 100.0) / 100.0))
+                    showCustomSpeedDialog = false
+                }) { Text("Set") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomSpeedDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
     }
 }
 
@@ -1686,12 +1810,261 @@ private fun formatPosition(seconds: Long): String {
     }
 }
 
-/** "1.0x", "1.25x", … (whole values rendered without a trailing .0). */
-internal fun formatRate(rate: Double): String =
-    (if (rate == rate.toLong().toDouble()) rate.toLong().toString() else rate.toString()) + "x"
+/**
+ * "1x", "1.25x", … — rounded to 2 decimals so a custom slider value never
+ * renders floating-point noise ("1.3500000000000001x"), and whole values drop
+ * the trailing decimals.
+ */
+internal fun formatRate(rate: Double): String {
+    val rounded = Math.round(rate * 100.0) / 100.0
+    val text = if (rounded == rounded.toLong().toDouble()) {
+        rounded.toLong().toString()
+    } else {
+        // Locale.US: the speed label always uses a dot ("1.35x"), never a
+        // locale decimal comma, so it matches the preset menu everywhere.
+        String.format(Locale.US, "%.2f", rounded).trimEnd('0').trimEnd('.')
+    }
+    return "${text}x"
+}
 
-/** The playback-speed options offered by the players. */
-internal val SPEED_OPTIONS = listOf(0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
+/** The playback-speed presets offered by the players (up to 5×). */
+internal val SPEED_OPTIONS =
+    listOf(0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0)
+
+/** Bounds for the custom playback-speed picker. */
+internal const val MIN_CUSTOM_SPEED = 0.25
+internal const val MAX_CUSTOM_SPEED = 5.0
+internal const val CUSTOM_SPEED_STEP = 0.05
+
+/**
+ * The canonical SHARE URL for [video].
+ *
+ * Instagram items share their own clean permalink (`/reel/<shortcode>/` or
+ * `/p/<shortcode>/`), with all tracking query parameters stripped — never the
+ * old hardcoded YouTube fallback. Everything else shares the standard YouTube
+ * watch URL.
+ */
+internal fun shareUrlFor(video: MediaVideo): String {
+    val isInstagram = video.platform == MediaPlatform.INSTAGRAM ||
+        video.videoId.startsWith("ig_")
+    if (!isInstagram) return "https://www.youtube.com/watch?v=${video.videoId}"
+    val source = video.instagramUrl ?: video.videoId
+    val shortcode =
+        com.muddassir.clearview.media.data.InstagramStreamResolver.extractShortcode(source)
+    val kind = if (video.instagramType == InstagramMediaType.REEL) "reel" else "p"
+    return when {
+        shortcode.isNotBlank() -> "https://www.instagram.com/$kind/$shortcode/"
+        !video.instagramUrl.isNullOrBlank() -> {
+            val base = video.instagramUrl!!.substringBefore('?').substringBefore('#')
+            base.trimEnd('/') + "/"
+        }
+        else -> "https://www.instagram.com/"
+    }
+}
+
+/**
+ * The portrait box size for an Instagram item: the media's own aspect ratio
+ * (9:16 Reels / videos, 1:1 posts), scaled to fit the screen width and capped
+ * at ~62% of the screen height so the control panel below stays reachable.
+ */
+@Composable
+private fun instagramPortraitBoxSize(video: MediaVideo): Modifier {
+    val configuration = LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp.dp
+    val screenHeight = configuration.screenHeightDp.dp
+    val ratio = when (video.instagramType) {
+        InstagramMediaType.REEL, InstagramMediaType.VIDEO -> 9f / 16f
+        else -> 1f
+    }
+    val maxHeight = screenHeight * 0.62f
+    val height = minOf(screenWidth / ratio, maxHeight)
+    val width = height * ratio
+    return Modifier.width(width).height(height)
+}
+
+/**
+ * JavaScript bridge injected into the Instagram WebView. The page-side script
+ * (see [instagramBridgeJs]) hooks the HTML5 `<video>` element's events and
+ * calls back into these methods, so the player's native Compose controls stay
+ * in lock-step with real playback (position, state, mute) without scraping the
+ * DOM.
+ */
+private class InstagramBridge(
+    val onTime: (currentSeconds: Double, durationSeconds: Double) -> Unit,
+    val onState: (isPlaying: Boolean, isEnded: Boolean) -> Unit,
+    val onVolume: (muted: Boolean) -> Unit
+) {
+    @android.webkit.JavascriptInterface
+    fun onTimeUpdate(currentTime: Double, duration: Double) = onTime(currentTime, duration)
+
+    @android.webkit.JavascriptInterface
+    fun onStateChange(isPlaying: Boolean, isEnded: Boolean) = onState(isPlaying, isEnded)
+
+    @android.webkit.JavascriptInterface
+    fun onVolumeChange(muted: Boolean) = onVolume(muted)
+}
+
+/**
+ * The page-side half of [InstagramBridge]: finds the `<video>` element,
+ * forwards its timeupdate / play / pause / ended / volumechange events to the
+ * bridge, and exposes `window.cvCommand(cmd, arg)` for native control
+ * (play / pause / toggle / seek / mute / unmute / rate / fullscreen). Idempotent
+ * — re-injection never double-binds.
+ */
+private fun instagramBridgeJs(): String = """
+(function() {
+  if (window.__cvHooked) { return; }
+  window.__cvHooked = true;
+  var current = null;
+  function bind(v) {
+    if (v.__cvBound) { return; }
+    v.__cvBound = true;
+    function time() {
+      try { InstagramBridge.onTimeUpdate(v.currentTime || 0, v.duration || 0); } catch (e) {}
+    }
+    v.addEventListener('timeupdate', time);
+    v.addEventListener('durationchange', time);
+    v.addEventListener('loadedmetadata', time);
+    v.addEventListener('play', function() { try { InstagramBridge.onStateChange(true, false); } catch (e) {} });
+    v.addEventListener('playing', function() { try { InstagramBridge.onStateChange(true, false); } catch (e) {} });
+    v.addEventListener('pause', function() { try { InstagramBridge.onStateChange(false, false); } catch (e) {} });
+    v.addEventListener('ended', function() { try { InstagramBridge.onStateChange(false, true); } catch (e) {} });
+    v.addEventListener('volumechange', function() { try { InstagramBridge.onVolumeChange(!!v.muted); } catch (e) {} });
+  }
+  function find() {
+    var list = document.querySelectorAll('video');
+    if (list.length > 0) { current = list[0]; bind(current); }
+  }
+  window.cvCommand = function(cmd, arg) {
+    find();
+    var v = current;
+    if (!v) { return; }
+    if (cmd === 'play') { v.play(); }
+    else if (cmd === 'pause') { v.pause(); }
+    else if (cmd === 'toggle') { if (v.paused) { v.play(); } else { v.pause(); } }
+    else if (cmd === 'seek') { if (typeof arg === 'number' && isFinite(arg)) { v.currentTime = arg; } }
+    else if (cmd === 'mute') { v.muted = true; }
+    else if (cmd === 'unmute') { v.muted = false; }
+    else if (cmd === 'rate') { if (typeof arg === 'number') { v.playbackRate = arg; } }
+    else if (cmd === 'fullscreen') { if (v.requestFullscreen) { v.requestFullscreen(); } }
+  };
+  var tries = 0;
+  var iv = setInterval(function() {
+    find();
+    if (current && current.readyState >= 1) { clearInterval(iv); }
+    if (++tries > 60) { clearInterval(iv); }
+  }, 250);
+  find();
+})();
+""".trimIndent()
+
+/**
+ * Native controls overlay for the Instagram player: play/pause, a seek bar
+ * with current position + duration, a mute toggle, a playback-speed menu and a
+ * fullscreen toggle — rendered over the WebView so Instagram videos get the
+ * same first-class controls as YouTube ones.
+ */
+@Composable
+private fun InstagramControls(
+    isPlaying: Boolean,
+    isMuted: Boolean,
+    positionSeconds: Double,
+    durationSeconds: Double,
+    playbackRate: Double,
+    isFullscreen: Boolean,
+    onTogglePlay: () -> Unit,
+    onSeek: (Double) -> Unit,
+    onToggleMute: () -> Unit,
+    onToggleFullscreen: () -> Unit,
+    onSpeedSelect: (Double) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var showSpeedMenu by remember { mutableStateOf(false) }
+    val canSeek = durationSeconds > 0.0
+    val maxValue = if (canSeek) durationSeconds.toFloat() else 1f
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = Color.Black.copy(alpha = 0.55f)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        ) {
+            IconButton(onClick = onTogglePlay) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    tint = Color.White
+                )
+            }
+            Text(
+                text = formatPosition(positionSeconds.toLong()),
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall
+            )
+            Slider(
+                value = if (canSeek) {
+                    positionSeconds.toFloat().coerceIn(0f, maxValue)
+                } else {
+                    0f
+                },
+                onValueChange = { onSeek(it.toDouble()) },
+                valueRange = 0f..maxValue,
+                enabled = canSeek,
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+            )
+            Text(
+                text = formatPosition(durationSeconds.toLong()),
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall
+            )
+            IconButton(onClick = onToggleMute) {
+                Icon(
+                    imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff
+                    else Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = if (isMuted) "Unmute" else "Mute",
+                    tint = Color.White
+                )
+            }
+            // Always-visible speed badge; tap to change the preset.
+            Box {
+                TextButton(onClick = { showSpeedMenu = true }) {
+                    Text(
+                        text = formatRate(playbackRate),
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                DropdownMenu(
+                    expanded = showSpeedMenu,
+                    onDismissRequest = { showSpeedMenu = false }
+                ) {
+                    SPEED_OPTIONS.forEach { rate ->
+                        DropdownMenuItem(
+                            text = { Text(formatRate(rate)) },
+                            trailingIcon = if (rate == playbackRate) {
+                                { Icon(Icons.Filled.Check, contentDescription = null) }
+                            } else null,
+                            onClick = {
+                                showSpeedMenu = false
+                                onSpeedSelect(rate)
+                            }
+                        )
+                    }
+                }
+            }
+            IconButton(onClick = onToggleFullscreen) {
+                Icon(
+                    imageVector = if (isFullscreen) Icons.Filled.FullscreenExit
+                    else Icons.Filled.Fullscreen,
+                    contentDescription = "Fullscreen",
+                    tint = Color.White
+                )
+            }
+        }
+    }
+}
 
 /** SharedPreferences holding the user's persisted playback rate. */
 private const val PREFS_NAME = "media_player_prefs"
@@ -1769,6 +2142,18 @@ private fun errorMessageRes(code: Int): Int = when (code) {
 @Composable
 private fun InstagramPlayer(
     video: MediaVideo,
+    isLandscape: Boolean,
+    fullscreenVertical: Boolean,
+    muted: Boolean,
+    playbackRate: Double,
+    resumeFromSeconds: Double,
+    seekToken: Int,
+    seekToSeconds: Double,
+    onToggleFullscreen: () -> Unit,
+    onProgress: (Double, Double) -> Unit,
+    onPlayerState: (Boolean, Boolean) -> Unit,
+    onMutedChange: (Boolean) -> Unit,
+    onRateChange: (Double) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1785,6 +2170,64 @@ private fun InstagramPlayer(
         )
     }
 
+    // ── Bridge-reported playback state ─────────────────────────────
+    var webView by remember(video.videoId) { mutableStateOf<WebView?>(null) }
+    var isPlaying by remember(video.videoId) { mutableStateOf(false) }
+    var positionSeconds by remember(video.videoId) { mutableDoubleStateOf(0.0) }
+    var durationSeconds by remember(video.videoId) { mutableDoubleStateOf(0.0) }
+    var mutedState by remember(video.videoId) { mutableStateOf(muted) }
+    var resumedOnce by remember(video.videoId) { mutableStateOf(false) }
+    // Kept live so the long-lived bridge never calls a stale lambda.
+    val progressCallback by rememberUpdatedState(onProgress)
+    val stateCallback by rememberUpdatedState(onPlayerState)
+    val mutedCallback by rememberUpdatedState(onMutedChange)
+    val bridge = remember(video.videoId) {
+        InstagramBridge(
+            onTime = { current, duration ->
+                positionSeconds = current
+                durationSeconds = duration
+                progressCallback(current, duration)
+            },
+            onState = { playing, ended ->
+                isPlaying = playing
+                stateCallback(playing, ended)
+            },
+            onVolume = { m ->
+                mutedState = m
+                mutedCallback(m)
+            }
+        )
+    }
+    val bridgeScript = remember { instagramBridgeJs() }
+
+    fun sendCommand(cmd: String, arg: Double? = null) {
+        val js = if (arg == null) {
+            "window.cvCommand && window.cvCommand('$cmd');"
+        } else {
+            "window.cvCommand && window.cvCommand('$cmd', $arg);"
+        }
+        webView?.evaluateJavascript(js, null)
+    }
+
+    // Auto-resume from the saved position once the duration is known.
+    LaunchedEffect(durationSeconds, resumeFromSeconds) {
+        if (!resumedOnce && resumeFromSeconds > 5.0 && durationSeconds > 0.0) {
+            sendCommand("seek", resumeFromSeconds)
+            resumedOnce = true
+        }
+    }
+    // Continue Watching / Watch Again re-seek from the parent.
+    LaunchedEffect(seekToken) {
+        if (seekToken > 0) sendCommand("seek", seekToSeconds)
+    }
+    // Apply the persisted playback rate.
+    LaunchedEffect(playbackRate) { sendCommand("rate", playbackRate) }
+    // Keep the mute state in lock-step with the player preference.
+    LaunchedEffect(muted) {
+        mutedState = muted
+        sendCommand(if (muted) "mute" else "unmute")
+    }
+
     // Try resolving direct .mp4 stream on-device without login
     LaunchedEffect(video.videoId) {
         if (isVideo && directMediaUrl == null && shortcode.isNotBlank()) {
@@ -1795,6 +2238,7 @@ private fun InstagramPlayer(
         }
     }
 
+    Box(modifier = modifier) {
     if (isVideo) {
         val streamUrl = directMediaUrl
         if (!streamUrl.isNullOrBlank()) {
@@ -1812,9 +2256,10 @@ private fun InstagramPlayer(
                 </style>
             </head>
             <body>
-                <video src="$streamUrl" poster="${video.thumbnailUrl}" controls autoplay playsinline loop
+                <video id="cvvideo" src="$streamUrl" poster="${video.thumbnailUrl}" autoplay playsinline
                        onerror="document.body.innerHTML='<div class=error>Video loading...</div>'">
                 </video>
+                <script>$bridgeScript</script>
             </body>
             </html>
             """.trimIndent()
@@ -1825,6 +2270,7 @@ private fun InstagramPlayer(
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         settings.mediaPlaybackRequiresUserGesture = false
+                        addJavascriptInterface(bridge, "InstagramBridge")
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
@@ -1832,9 +2278,10 @@ private fun InstagramPlayer(
                             ): Boolean = true
                         }
                         loadDataWithBaseURL(null, htmlContent, "text/html", "UTF-8", null)
+                        webView = this
                     }
                 },
-                modifier = modifier
+                modifier = Modifier.fillMaxSize()
             )
         } else {
             // Public embed player: renders the public Reel/video directly with playback controls
@@ -1849,6 +2296,7 @@ private fun InstagramPlayer(
                         settings.loadWithOverviewMode = true
                         settings.userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
                         setBackgroundColor(android.graphics.Color.BLACK)
+                        addJavascriptInterface(bridge, "InstagramBridge")
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(
                                 view: WebView?,
@@ -1862,17 +2310,23 @@ private fun InstagramPlayer(
                                 // Block top-level navigation away from the embed (never open Chrome or Instagram login)
                                 return true
                             }
+
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                // Best-effort: hook the embed page's <video> too.
+                                view?.evaluateJavascript(bridgeScript, null)
+                            }
                         }
                         loadUrl("https://www.instagram.com/p/$shortcode/embed/")
+                        webView = this
                     }
                 },
-                modifier = modifier
+                modifier = Modifier.fillMaxSize()
             )
         }
     } else {
         // Image post or carousel — render native Compose RemoteImage
         Box(
-            modifier = modifier.background(Color.Black),
+            modifier = Modifier.fillMaxSize().background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
             val thumbnailUrl = video.thumbnailUrl.takeIf { it.isNotBlank() }
@@ -1900,6 +2354,32 @@ private fun InstagramPlayer(
                     )
                 }
             }
+        }
+    }
+
+        // ── Native controls overlay (video only) ───────────────────
+        if (isVideo) {
+            InstagramControls(
+                isPlaying = isPlaying,
+                isMuted = mutedState,
+                positionSeconds = positionSeconds,
+                durationSeconds = durationSeconds,
+                playbackRate = playbackRate,
+                isFullscreen = isLandscape || fullscreenVertical,
+                onTogglePlay = { sendCommand("toggle") },
+                onSeek = { sendCommand("seek", it) },
+                onToggleMute = {
+                    val target = !mutedState
+                    mutedState = target
+                    mutedCallback(target)
+                    sendCommand(if (target) "mute" else "unmute")
+                },
+                onToggleFullscreen = onToggleFullscreen,
+                // Persist + update the badge; the LaunchedEffect below applies
+                // the new rate to the WebView video element.
+                onSpeedSelect = { onRateChange(it) },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
         }
     }
 }

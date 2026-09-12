@@ -91,8 +91,10 @@ class TodoReminderReceiver : BroadcastReceiver() {
                 store.saveItems(
                     TodoCodec.completed(items, todoId, day, System.currentTimeMillis())
                 )
-                // Completing cancels the day's pending reminders and re-schedules
-                // the remaining future ones.
+                // Completed FIRST (saveItems above), then cancel EVERY reminder
+                // for this occurrence — so a range-based todo can never ring
+                // again today — and re-schedule the remaining future ones.
+                TodoScheduler.cancelAllRemindersForTodo(context, todoId, epochDay)
                 TodoScheduler.rescheduleAll(context)
                 // Visible feedback: the notification leaves the shade — done.
                 TodoNotifier.cancelDayNotification(context, todoId, epochDay)

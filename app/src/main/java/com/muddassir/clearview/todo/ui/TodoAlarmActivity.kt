@@ -140,8 +140,10 @@ class TodoAlarmActivity : ComponentActivity() {
             store.saveItems(
                 TodoCodec.completed(items, item.id, day, System.currentTimeMillis())
             )
-            // Completing cancels the day's pending reminders and re-schedules
-            // the remaining future ones.
+            // Persist FIRST, then cancel every reminder for THIS occurrence
+            // (all index offsets), then re-schedule the remaining future ones
+            // — so no further alarm can ring for a day that is completed.
+            TodoScheduler.cancelAllRemindersForTodo(this, item.id, day.toEpochDay())
             TodoScheduler.rescheduleAll(this)
         }
         // Stop the ringing notification either way.

@@ -614,12 +614,23 @@ class MediaRepository(context: Context) {
         prefs.edit().putString(KEY_UPDATES_HISTORY, MediaUpdates.encode(remaining)).apply()
     }
 
+    /** Removes every update from the feed and the notification shade. */
+    fun clearAllUpdates() {
+        prefs.edit().putString(KEY_UPDATES_HISTORY, MediaUpdates.encode(emptyList())).apply()
+    }
+
     /**
      * How many of [updates] the user hasn't seen yet (drives the Media-tab
      * badge). An update is "unread" until its id is in the seen set.
      */
     fun countUnreadUpdates(updates: List<MediaChannelUpdate>): Int =
-        updates.count { it.latestVideoId !in getSeenUpdateIds() }
+        unreadUpdateIds(updates).size
+
+    /** The ids in [updates] the user hasn't seen yet (unread indicator in the sheet). */
+    fun unreadUpdateIds(updates: List<MediaChannelUpdate>): Set<String> {
+        val seen = getSeenUpdateIds()
+        return updates.map { it.latestVideoId }.filterNot { it in seen }.toSet()
+    }
 
     /** Marks the given update ids as seen; returns how many were newly marked. */
     fun markUpdatesSeen(videoIds: List<String>): Int {

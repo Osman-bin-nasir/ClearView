@@ -17,6 +17,21 @@
     <string name="quran_tab">Quran</string>
     <string name="media_tab">Media</string>
     <string name="live_tab">Live</string>
+    <!-- Bottom navigation: the "Live" tab was replaced by a clean, curated
+         Clear Feed. Makkah/Madinah live streams now live inside the Media tab
+         behind the "Haramayn Live" shortcut. -->
+    <string name="clear_feed_tab">Clear Feed</string>
+    <string name="clear_feed_subtitle">A calm, curated feed — no ads, no noise.</string>
+    <string name="clear_feed_filter_all">All</string>
+    <string name="clear_feed_filter_reflection">Reflection</string>
+    <string name="clear_feed_filter_discipline">Discipline</string>
+    <string name="clear_feed_filter_wellness">Wellness</string>
+    <string name="clear_feed_filter_quran">Quran</string>
+    <string name="clear_feed_empty">You\'re all caught up. No more posts in this feed.</string>
+    <string name="clear_feed_share_via">Share post via</string>
+    <string name="haramayn_live">Haramayn Live</string>
+    <string name="haramayn_live_short">Haramayn</string>
+    <string name="haramayn_live_desc">Makkah &amp; Madinah live broadcasts</string>
     <string name="quran_share_via">Share verse via</string>
     <string name="quran_bookmark">Bookmark</string>
     <string name="quran_bookmarked">Verse bookmarked</string>
@@ -35,6 +50,12 @@
     <string name="media_has_update">%1$s has an update</string>
     <string name="media_update_dismiss">Dismiss update</string>
     <string name="media_no_updates_yet">No updates yet. New videos from your saved channels will appear here.</string>
+    <string name="media_update_clear_all">Clear all</string>
+    <string name="media_no_updates_title">You\'re all caught up</string>
+    <string name="media_no_updates_desc">New videos from your saved channels will show up here.</string>
+    <string name="media_update_unread">Unread update</string>
+    <string name="media_updates_relative_just_now">Just now</string>
+    <string name="media_updates_relative_yesterday">Yesterday</string>
     <string name="media_notification_channel">Channel updates</string>
     <string name="media_notification_channel_desc">New videos from your saved channels</string>
     <string name="quran_verse_refresh_frequency">New verse every</string>
@@ -342,6 +363,32 @@
     <string name="todo_stats_best_day">%1$s — %2$d%%</string>
     <string name="todo_stats_productive_label">Most productive time</string>
     <string name="todo_stats_productive_time">%1$s – %2$s</string>
+    <!-- Consolidated Productivity dashboard + heatmap + attempted bars -->
+    <string name="todo_dashboard_title">Productivity</string>
+    <string name="todo_stats_streak_label">Current streak</string>
+    <string name="todo_stats_longest_label">Longest streak</string>
+    <string name="todo_stats_week_score_label">Week score</string>
+    <string name="todo_stats_prev_week_label">Last week</string>
+    <string name="todo_stats_days_value">%1$d days</string>
+    <string name="todo_stats_delta_up">↑ %1$d%% vs last week</string>
+    <string name="todo_stats_delta_down">↓ %1$d%% vs last week</string>
+    <string name="todo_stats_delta_flat">No change vs last week</string>
+    <string name="todo_stats_productive_minutes_label">Productive time</string>
+    <string name="todo_dashboard_completed_label">Completed</string>
+    <string name="todo_dashboard_attempted_label">Attempted</string>
+    <string name="todo_dashboard_incomplete_label">Incomplete</string>
+    <string name="todo_graph_attempted">Attempted Todos</string>
+    <string name="todo_filter_attempted">Attempted</string>
+    <string name="todo_heatmap_title">Productivity heatmap</string>
+    <string name="todo_heatmap_less">Less</string>
+    <string name="todo_heatmap_more">More</string>
+    <string name="todo_heatmap_day_completed">Completed: %1$d</string>
+    <string name="todo_heatmap_day_attempted">Attempted: %1$d</string>
+    <string name="todo_heatmap_day_time">Productive time: %1$s</string>
+    <string name="todo_heatmap_day_score">Daily score: %1$d%%</string>
+    <string name="todo_history_attempted">◐ %1$d attempted</string>
+    <string name="todo_history_time">⏱ %1$s</string>
+    <string name="todo_history_time_of">⏱ %1$s / %2$s</string>
     <string name="todo_calendar_prev">Previous month</string>
     <string name="todo_calendar_next">Next month</string>
     <string name="todo_calendar_month_progress">This month: %1$d%% completed</string>
