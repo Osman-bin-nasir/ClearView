@@ -92,6 +92,35 @@ class QuranRepository(context: Context) {
     }
 
     /**
+     * Process-wide cache of per-surah ayah counts, derived from the parsed
+     * English edition (e.g. Al-Faatiha → 7, Al-Baqara → 286). Stamped against
+     * the cache file, same as [englishVerses]. Only used on background threads.
+     */
+    private fun surahCounts(): Map<Int, Int>? {
+        val stamp = store.cacheStamp()
+        if (surahCountsStamp != stamp) {
+            SurahCountsCache = englishVerses()?.let { QuranJsonParser.surahAyahCounts(it) }
+            surahCountsStamp = stamp
+        }
+        return SurahCountsCache
+    }
+
+    /**
+     * Fills in [QuranVerse.totalAyahs] for a verse loaded from persistence that
+     * predates the surah counts, re-saving it so the reader + widget show the
+     * "ayah / total" progress instantly afterwards. No-op (returns the verse
+     * unchanged) when the count is already known or the cache is missing.
+     */
+    suspend fun backfillCurrentVerseTotals(): QuranVerse? = withContext(Dispatchers.IO) {
+        val current = store.readCurrentVerse() ?: return@withContext null
+        if (current.totalAyahs > 0) return@withContext current
+        val total = surahCounts()?.get(current.surahNumber) ?: return@withContext current
+        val updated = current.copy(totalAyahs = total)
+        store.saveCurrentVerse(updated)
+        updated
+    }
+
+    /**
      * Picks a random verse from the cached translation, persists it as the
      * current verse and returns it. Avoids repeating the verse that is
      * currently displayed (when there is more than one choice). Returns null
@@ -110,13 +139,9 @@ class QuranRepository(context: Context) {
             attempts++
         }
 
-        // Attach the Arabic text when the Arabic edition is cached (best-effort;
+        // Attach the Arabic text + surah ayah count when available (best-effort;
         // stays empty on English-only installs).
-        val enriched = if (verse.arabicText.isBlank()) {
-            verse.copy(arabicText = arabicTexts()?.get(Pair(verse.surahNumber, verse.ayahNumber)) ?: "")
-        } else {
-            verse
-        }
+        val enriched = enrich(verse)
 
         store.saveCurrentVerse(enriched)
         enriched
@@ -148,13 +173,7 @@ class QuranRepository(context: Context) {
             if (targetIndex !in verses.indices) return@withContext null
 
             val raw = verses[targetIndex]
-            val enriched = if (raw.arabicText.isBlank()) {
-                raw.copy(
-                    arabicText = arabicTexts()?.get(Pair(raw.surahNumber, raw.ayahNumber)) ?: ""
-                )
-            } else {
-                raw
-            }
+            val enriched = enrich(raw)
             store.saveCurrentVerse(enriched)
             enriched
         }
@@ -265,18 +284,29 @@ class QuranRepository(context: Context) {
         }.sortedWith(compareBy<QuranVerse> { it.surahNumber }.thenBy { it.ayahNumber })
     }
 
-    /** Enriches [v] with Arabic text when the Arabic edition is cached. */
-    private fun enrich(v: QuranVerse): QuranVerse =
-        if (v.arabicText.isBlank()) {
-            v.copy(arabicText = arabicTexts()?.get(Pair(v.surahNumber, v.ayahNumber)) ?: "")
+    /** Enriches [v] with Arabic text and the surah ayah count when cached. */
+    private fun enrich(v: QuranVerse): QuranVerse {
+        val arabic = if (v.arabicText.isBlank()) {
+            arabicTexts()?.get(Pair(v.surahNumber, v.ayahNumber)) ?: ""
         } else {
-            v
+            v.arabicText
         }
+        val total = if (v.totalAyahs > 0) v.totalAyahs else surahCounts()?.get(v.surahNumber) ?: 0
+        return if (arabic == v.arabicText && total == v.totalAyahs) {
+            v
+        } else {
+            v.copy(arabicText = arabic, totalAyahs = total)
+        }
+    }
 
     private companion object {
         @Volatile
         private var ArabicTextsCache: Map<Pair<Int, Int>, String>? = null
         private var arabicTextsStamp = -1L
+
+        @Volatile
+        private var SurahCountsCache: Map<Int, Int>? = null
+        private var surahCountsStamp = -1L
 
         @Volatile
         private var EnglishVersesCache: List<QuranVerse>? = null

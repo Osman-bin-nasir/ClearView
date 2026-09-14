@@ -1,5 +1,22 @@
 <resources>
     <string name="app_name">ClearView</string>
+    <!-- Block tab lock / password setup (shown before the Block dashboard) -->
+    <string name="block_tab_subtitle">Security &amp; controls</string>
+    <string name="block_tab_nav">Block</string>
+    <string name="block_lock_set_title">Set Block Password</string>
+    <string name="block_lock_title">Block Tab Locked</string>
+    <string name="block_lock_set_note">Create a password to protect the Block tab (keywords, websites and protection controls)</string>
+    <string name="block_lock_note">Enter password to open Block settings</string>
+    <string name="block_lock_new_password">New password</string>
+    <string name="block_lock_confirm_password">Confirm password</string>
+    <string name="block_lock_password">Password</string>
+    <string name="block_lock_set_action">Set Password</string>
+    <string name="block_lock_unlock_action">Unlock</string>
+    <string name="block_lock_too_short">Password must be at least 4 characters</string>
+    <string name="block_lock_mismatch">Passwords do not match</string>
+    <string name="block_lock_incorrect">Incorrect password</string>
+    <string name="block_lock_now_locked">Lock Block tab</string>
+    <string name="block_lock_no_password">No password set</string>
     <string name="accessibility_service_label">ClearView Service</string>
     <string name="accessibility_service_description">Monitors Chrome and Google app to block adult content, blocked keywords/websites, and incognito browsing. All data stays on your device. No accounts, no cloud sync, no analytics.</string>
 
@@ -16,8 +33,7 @@
     <string name="quran_verse_unavailable">Verses are being downloaded. Check back in a moment.</string>
     <string name="quran_tab">Quran</string>
     <string name="media_tab">Media</string>
-    <string name="live_tab">Live</string>
-    <!-- Bottom navigation: the "Live" tab was replaced by a clean, curated
+    <!-- Bottom navigation: the old "Live" tab was replaced by a clean, curated
          Clear Feed. Makkah/Madinah live streams now live inside the Media tab
          behind the "Haramayn Live" shortcut. -->
     <string name="clear_feed_tab">Clear Feed</string>
@@ -29,9 +45,36 @@
     <string name="clear_feed_filter_quran">Quran</string>
     <string name="clear_feed_empty">You\'re all caught up. No more posts in this feed.</string>
     <string name="clear_feed_share_via">Share post via</string>
+    <string name="clear_feed_like">Like</string>
+    <string name="clear_feed_save">Save</string>
+    <string name="clear_feed_share">Share</string>
+    <!-- Body of the shared post: the text, then the attribution line. -->
+    <string name="clear_feed_share_text">%1$s\n\n— %2$s on Clear View</string>
+    <!-- "@handle · 2h ago" on a post header. The time part is one of the
+         relative-time plurals below. -->
+    <string name="clear_feed_handle_time">%1$s · %2$s</string>
+    <plurals name="clear_feed_time_minutes">
+        <item quantity="one">%1$d minute ago</item>
+        <item quantity="other">%1$d minutes ago</item>
+    </plurals>
+    <plurals name="clear_feed_time_hours">
+        <item quantity="one">%1$d hour ago</item>
+        <item quantity="other">%1$d hours ago</item>
+    </plurals>
+    <plurals name="clear_feed_time_days">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <plurals name="clear_feed_time_weeks">
+        <item quantity="one">%1$d week ago</item>
+        <item quantity="other">%1$d weeks ago</item>
+    </plurals>
+    <!-- Custom canvas-drawn blocking overlays: their text is painted onto the
+         canvas, so these descriptions are what assistive technology announces. -->
+    <string name="long_video_block_overlay_desc">Blocked video. Double-tap to leave and go to YouTube Home.</string>
+    <string name="player_block_overlay_desc">Blocked player. Interaction is disabled.</string>
     <string name="haramayn_live">Haramayn Live</string>
     <string name="haramayn_live_short">Haramayn</string>
-    <string name="haramayn_live_desc">Makkah &amp; Madinah live broadcasts</string>
     <string name="quran_share_via">Share verse via</string>
     <string name="quran_bookmark">Bookmark</string>
     <string name="quran_bookmarked">Verse bookmarked</string>
@@ -49,11 +92,9 @@
     <string name="media_notification_permission_denied">Notifications are blocked. Allow them in Settings to receive updates and reminders.</string>
     <string name="media_has_update">%1$s has an update</string>
     <string name="media_update_dismiss">Dismiss update</string>
-    <string name="media_no_updates_yet">No updates yet. New videos from your saved channels will appear here.</string>
     <string name="media_update_clear_all">Clear all</string>
     <string name="media_no_updates_title">You\'re all caught up</string>
     <string name="media_no_updates_desc">New videos from your saved channels will show up here.</string>
-    <string name="media_update_unread">Unread update</string>
     <string name="media_updates_relative_just_now">Just now</string>
     <string name="media_updates_relative_yesterday">Yesterday</string>
     <string name="media_notification_channel">Channel updates</string>
@@ -61,6 +102,13 @@
     <string name="quran_verse_refresh_frequency">New verse every</string>
     <string name="quran_verse_hour_short">%1$d hr</string>
     <string name="quran_verse_reference">Quran %1$d:%2$d</string>
+    <!-- Progress under "Surah N · Ayah M": the current ayah out of the surah's
+         total (e.g. "91 / 118 ayahs"). Total is derived from the downloaded
+         edition, never hardcoded. -->
+    <string name="quran_ayah_progress">%1$d / %2$d ayahs</string>
+    <string name="quran_ayah_progress_desc">Ayah %1$d of %2$d in this surah</string>
+    <!-- Compact ayah/total used in dense rows (search results, bookmarks, widget). -->
+    <string name="quran_ayah_progress_short">%1$d/%2$d</string>
     <string name="quran_more_options">More options</string>
     <string name="quran_settings_title">Settings</string>
     <string name="quran_notifications_title">Notifications</string>
@@ -270,20 +318,22 @@
     <string name="todo_snooze_custom">Custom</string>
     <string name="todo_snooze_custom_minutes">Minutes</string>
     <string name="todo_weekly_progress">Weekly Progress</string>
-    <string name="todo_weekly_count">%1$d / %2$d Todos completed</string>
+    <!-- The noun agrees with the TOTAL (%2$d), not the completed count. -->
+    <plurals name="todo_weekly_count">
+        <item quantity="one">%1$d / %2$d Todo completed</item>
+        <item quantity="other">%1$d / %2$d Todos completed</item>
+    </plurals>
+    <!-- Filter chip label + its count, e.g. "Today · 3". -->
+    <string name="todo_chip_with_count">%1$s · %2$d</string>
+    <string name="todo_completed_title">Completed Today</string>
+    <string name="todo_completed_none">Nothing completed yet today — tick a todo off on the Today tab and it shows up here.</string>
     <string name="todo_weekly_score">Weekly Score</string>
     <string name="todo_score_value">%1$d / 100</string>
     <string name="todo_score_excellent">Excellent</string>
     <string name="todo_score_good">Good</string>
     <string name="todo_score_fair">Fair</string>
     <string name="todo_score_low">Keep going</string>
-    <string name="todo_weekly_insights">Weekly Insights</string>
-    <string name="todo_insight_best_day">%1$s — %2$d%% completed</string>
     <string name="todo_insight_improvement">%1$s%% vs last week</string>
-    <plurals name="todo_streak">
-        <item quantity="one">%1$d day streak</item>
-        <item quantity="other">%1$d day streak</item>
-    </plurals>
     <string name="todo_graph_completed">Completed Todos</string>
     <string name="todo_graph_incomplete">Incomplete Todos</string>
     <string name="todo_graph_total">Total Todos</string>
@@ -308,7 +358,10 @@
     <string name="todo_history_title">History</string>
     <string name="todo_today_target_progress">🎯 %1$d / %2$d completed · %3$d%% of today\'s target</string>
     <string name="todo_today_none">Nothing due today</string>
-    <string name="todo_daily_target_label">Daily target: %1$d Todos</string>
+    <plurals name="todo_daily_target_label">
+        <item quantity="one">Daily target: %1$d Todo</item>
+        <item quantity="other">Daily target: %1$d Todos</item>
+    </plurals>
     <string name="todo_daily_target_edit">Set daily target</string>
     <string name="todo_target_set_title">Daily completion target</string>
     <string name="todo_target_set_note">How many todos you aim to complete each day. It is shown as your 🎯 daily progress.</string>
@@ -316,6 +369,7 @@
     <string name="todo_upcoming_empty">Nothing scheduled ahead</string>
     <string name="todo_upcoming_section">Upcoming</string>
     <string name="todo_missed_chip">Missed</string>
+    <string name="todo_checkbox_desc">Complete or uncomplete: %1$s</string>
     <string name="todo_today_all_done">All done for today! 🎉</string>
     <string name="todo_history_completed_section">Completed</string>
     <string name="todo_history_missed_section">Incomplete / Missed</string>
@@ -327,6 +381,14 @@
     <string name="todo_history_missed">✗ %1$d missed</string>
     <string name="todo_history_last">last %1$s</string>
     <string name="todo_history_reset">Reset</string>
+    <!-- Delete confirmation: the optional history purge -->
+    <string name="todo_delete_history_toggle">Also delete its history</string>
+    <plurals name="todo_delete_history_days">
+        <item quantity="one">%1$d completed day is recorded for this todo</item>
+        <item quantity="other">%1$d completed days are recorded for this todo</item>
+    </plurals>
+    <string name="todo_delete_history_off">The todo is removed from your lists. Its past completions, misses and logged time are kept, so your streaks, heatmap, weekly score and statistics stay intact.</string>
+    <string name="todo_delete_history_on">The todo and all of its history are deleted. Its completed and missed days stop counting towards your streaks, heatmap, weekly score and statistics.</string>
     <string name="todo_history_reset_title">Reset todo progress?</string>
     <string name="todo_history_reset_text">This permanently resets your todo progress, history and statistics. Today\'s completed count, the progress bar, the daily target, the weekly score and all stats go back to zero. Your todos themselves stay — only the record of what was done is wiped.</string>
     <string name="todo_history_reset_type_hint">Type RESET to confirm</string>
@@ -339,6 +401,7 @@
     <string name="todo_score_component_consistency">Consistency</string>
     <string name="todo_score_component_streak">Streak</string>
     <string name="todo_score_component_timeliness">Timeliness</string>
+    <string name="todo_score_component_volume">Volume</string>
     <string name="todo_score_total">Total</string>
     <string name="todo_score_plus_of">+%1$d / %2$d</string>
     <string name="todo_score_expl_completion_weighted">Weighted: %1$d of %2$d due points (High 3× · Normal 2× · Low 1×)</string>
@@ -346,19 +409,28 @@
     <string name="todo_score_expl_streak">%1$d-day streak (max 7)</string>
     <string name="todo_score_expl_timeliness">%1$d of %2$d closed items handled on time</string>
     <string name="todo_score_expl_timeliness_none">Nothing has reached its due time yet this week</string>
+    <string name="todo_score_expl_volume">%1$d completed this week · your usual %2$d</string>
+    <string name="todo_score_expl_volume_none">No earlier week to compare against yet</string>
     <string name="todo_score_empty_week">No todos due this week</string>
-    <string name="todo_insight_completion">%1$d%% of applicable Todos completed</string>
-    <string name="todo_insight_active_days">%1$d of 7 days</string>
     <string name="todo_insight_streak_none">No current streak</string>
     <string name="todo_insight_first_week">First week of tracking — keep completing Todos to build your history.</string>
-    <plurals name="todo_insight_remaining">
-        <item quantity="one">%1$d Todo remaining</item>
-        <item quantity="other">%1$d Todos remaining</item>
+    <!-- Weekly Insights & Statistics (one merged card) -->
+    <string name="todo_insights_title">Weekly Insights &amp; Statistics</string>
+    <string name="todo_insights_empty">No todos were due this week — add a todo to start building your insights.</string>
+    <string name="todo_insight_completion_rate">Completion rate</string>
+    <string name="todo_insight_completion_value">%1$d%% · %2$d of %3$d</string>
+    <string name="todo_insight_pending_label">Pending today</string>
+    <string name="todo_insight_pending_value">%1$d left</string>
+    <string name="todo_insight_progress_label">Weekly progress</string>
+    <string name="todo_insight_volume_label">Volume vs usual</string>
+    <string name="todo_insight_volume_value">%1$d done · usual %2$d</string>
+    <string name="todo_insight_volume_none">No history yet</string>
+    <plurals name="todo_insight_month_value">
+        <item quantity="one">%1$d of %2$d Todo · %3$d%%</item>
+        <item quantity="other">%1$d of %2$d Todos · %3$d%%</item>
     </plurals>
-    <string name="todo_stats_title">Statistics</string>
-    <string name="todo_stats_this_week">This week</string>
+    <string name="todo_insight_share">Share progress card</string>
     <string name="todo_stats_this_month">This month</string>
-    <string name="todo_stats_week">%1$d of %2$d Todos · %3$d%%</string>
     <string name="todo_stats_best_day_label">Best day</string>
     <string name="todo_stats_best_day">%1$s — %2$d%%</string>
     <string name="todo_stats_productive_label">Most productive time</string>
@@ -367,19 +439,20 @@
     <string name="todo_dashboard_title">Productivity</string>
     <string name="todo_stats_streak_label">Current streak</string>
     <string name="todo_stats_longest_label">Longest streak</string>
-    <string name="todo_stats_week_score_label">Week score</string>
-    <string name="todo_stats_prev_week_label">Last week</string>
-    <string name="todo_stats_days_value">%1$d days</string>
+    <plurals name="todo_stats_days_value">
+        <item quantity="one">%1$d day</item>
+        <item quantity="other">%1$d days</item>
+    </plurals>
     <string name="todo_stats_delta_up">↑ %1$d%% vs last week</string>
     <string name="todo_stats_delta_down">↓ %1$d%% vs last week</string>
     <string name="todo_stats_delta_flat">No change vs last week</string>
     <string name="todo_stats_productive_minutes_label">Productive time</string>
-    <string name="todo_dashboard_completed_label">Completed</string>
-    <string name="todo_dashboard_attempted_label">Attempted</string>
-    <string name="todo_dashboard_incomplete_label">Incomplete</string>
     <string name="todo_graph_attempted">Attempted Todos</string>
     <string name="todo_filter_attempted">Attempted</string>
     <string name="todo_heatmap_title">Productivity heatmap</string>
+    <!-- Subtitle under the heatmap title: what the grid covers. -->
+    <string name="todo_heatmap_subtitle">Last 6 months · one square per day, darker means more completed</string>
+    <string name="todo_heatmap_cell_desc">%1$s · %2$d completed · %3$d%% of the day\'s plan</string>
     <string name="todo_heatmap_less">Less</string>
     <string name="todo_heatmap_more">More</string>
     <string name="todo_heatmap_day_completed">Completed: %1$d</string>
@@ -441,7 +514,6 @@
     <string name="progress_card_save_failed">Couldn\'t save the card</string>
     <string name="progress_card_share_via">Share progress card</string>
     <string name="progress_card_share_failed">Couldn\'t share the card</string>
-    <string name="progress_card_share_progress">Share progress</string>
 
     <!-- Quran settings sheet (three-dot menu) section headers -->
     <string name="quran_settings_section_quran">Quran / New Verse</string>

@@ -126,7 +126,12 @@ fun DownloadsSection(
     onSourceFilterChange: (DownloadSourceFilter) -> Unit = {},
     /** Bumped when a playlist changes here (Media tab mirrors its own counter). */
     onPlaylistsChanged: () -> Unit = {},
-    onPlayAudio: (DownloadItem) -> Unit
+    /**
+     * Plays a download. The SECOND argument is the queue the user is looking
+     * at (this filtered Downloads list), so the audio player's Next / Previous
+     * buttons walk exactly this context.
+     */
+    onPlayAudio: (DownloadItem, List<DownloadItem>) -> Unit
 ) {
     val context = LocalContext.current
     val repository = remember { MediaRepository(context.applicationContext) }
@@ -408,7 +413,7 @@ fun DownloadsSection(
                         }
                     }
                     items(downloads, key = { it.videoId }) { item ->
-                        DownloadRow(
+                        MiniAudioCard(
                             item = item,
                             selectionMode = selectionMode,
                             selected = item.videoId in selectedIds,
@@ -416,7 +421,7 @@ fun DownloadsSection(
                                 if (item.videoId in selectedIds) selectedIds.remove(item.videoId)
                                 else selectedIds.add(item.videoId)
                             },
-                            onPlay = { onPlayAudio(item) },
+                            onPlay = { onPlayAudio(item, downloads) },
                             onAddToPlaylist = { pendingPlaylistItem = item },
                             onDelete = { pendingDeleteItem = item }
                         )
@@ -735,22 +740,34 @@ private fun ActiveDownloadRow(
  * channel, duration · size, and a single ⋯ menu (Play/Pause, Add to playlist,
  * Delete download). The row highlights subtly while its audio is loaded.
  */
+/**
+ * THE shared audio card, used everywhere an offline track is listed as a row:
+ * the Downloads view, user playlists and any other audio context. Keeping ONE
+ * component (square album art, title + channel, source chip, duration · size,
+ * a now-playing equalizer and a ⋯ menu) is what stops the app from having
+ * several slightly different cards for the same content.
+ *
+ * The card is readable on its own (the current track gets a primary tint and
+ * the animated bars), and the ⋯ actions are optional so a purely informational
+ * context can simply omit them.
+ */
 @Composable
-private fun DownloadRow(
+fun MiniAudioCard(
     item: DownloadItem,
-    selectionMode: Boolean,
-    selected: Boolean,
-    onToggleSelect: () -> Unit,
-    onPlay: () -> Unit,
-    onAddToPlaylist: () -> Unit,
-    onDelete: () -> Unit
+    modifier: Modifier = Modifier,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    onToggleSelect: () -> Unit = {},
+    onPlay: () -> Unit = {},
+    onAddToPlaylist: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null
 ) {
     val isCurrent = OfflineAudioPlayer.playingVideoId.value == item.videoId
     val isPlaying = isCurrent && OfflineAudioPlayer.isPlaying.value
     var menuOpen by remember { mutableStateOf(false) }
 
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(
@@ -826,9 +843,9 @@ private fun DownloadRow(
             }
         }
 
-        if (!selectionMode) {
-            // ── ⋯ menu: Play/Pause (toggle on the loaded track), Add to
-            // playlist, Delete download. Replaces the old three-icon row. ──
+        if (!selectionMode && (onAddToPlaylist != null || onDelete != null)) {
+            // ── ⋯ menu: Play/Pause (toggle on the loaded track) plus the
+            // actions this context actually supports. ──
             Box {
                 IconButton(onClick = { menuOpen = true }) {
                     Icon(
@@ -853,20 +870,24 @@ private fun DownloadRow(
                             if (isCurrent) OfflineAudioPlayer.toggle() else onPlay()
                         }
                     )
-                    DropdownMenuItem(
-                        text = { Text("Add to playlist") },
-                        onClick = {
-                            menuOpen = false
-                            onAddToPlaylist()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Delete download") },
-                        onClick = {
-                            menuOpen = false
-                            onDelete()
-                        }
-                    )
+                    onAddToPlaylist?.let { addToPlaylist ->
+                        DropdownMenuItem(
+                            text = { Text("Add to playlist") },
+                            onClick = {
+                                menuOpen = false
+                                addToPlaylist()
+                            }
+                        )
+                    }
+                    onDelete?.let { delete ->
+                        DropdownMenuItem(
+                            text = { Text("Delete download") },
+                            onClick = {
+                                menuOpen = false
+                                delete()
+                            }
+                        )
+                    }
                 }
             }
         }

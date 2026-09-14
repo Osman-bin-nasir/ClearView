@@ -22,11 +22,12 @@ import kotlin.math.roundToInt
  * surfaced separately by the calendar ([monthDayStats], which keeps them for
  * display only).
  *
- * SCORE (max 100, fully explainable — v2, every point must be EARNED):
- *   Completion  55  · priority-weighted: 55 × Σweight(completed) / Σweight(due)
- *   Consistency 20  · 20 × (active days / days with due todos)
- *   Streak      15  · 15 × (min(streak, 7) / 7) — 0 is earned, not excluded
+ * SCORE (max 100, fully explainable — v3, every point must be EARNED):
+ *   Completion  45  · priority-weighted: 45 × Σweight(completed) / Σweight(due)
+ *   Consistency 18  · 18 × (active days / days with due todos)
+ *   Streak      12  · 12 × (min(streak, 7) / 7) — 0 is earned, not excluded
  *   Timeliness  10  · 10 × (1 − overdue/missed ÷ closed items)
+ *   Volume      15  · 15 × min(1, completed ÷ your own recent baseline)
  *
  * Exclusion rule: a component only scores when there is something to measure.
  * If its denominator is 0 it is EXCLUDED and the remaining base weights are
@@ -34,14 +35,28 @@ import kotlin.math.roundToInt
  * Nothing defaults to full marks for being empty or unfailed — that was the
  * old bug (free High-Priority +5 and On-track +25 produced a 30/100 score for
  * zero completions). A week with no due todos gets no numeric score at all.
+ *
+ * WHY VOLUME (v3): the four v2 components all measure RATIOS, so a single
+ * trivial todo completed daily — or five easy ones added and ticked off —
+ * scored identically to a heavy, disciplined week. Volume compares this
+ * week's completed count against the user's OWN recent baseline (the average
+ * of the previous [BASELINE_WEEKS] applicable weeks), which (a) rewards doing
+ * more than you usually do, (b) cannot be inflated by merely creating more
+ * todos (only completions count, and more todos also raise the Completion
+ * denominator), and (c) stays out of the score entirely until real history
+ * exists, so new users are not penalised for having no past.
  */
 object TodoStats {
 
-    // ── v2 base weights (renormalized after exclusions) ────────────────
-    private const val W_COMPLETION = 55
-    private const val W_CONSISTENCY = 20
-    private const val W_STREAK = 15
+    // ── v3 base weights (renormalized after exclusions) ────────────────
+    private const val W_COMPLETION = 45
+    private const val W_CONSISTENCY = 18
+    private const val W_STREAK = 12
     private const val W_TIMELINESS = 10
+    private const val W_VOLUME = 15
+
+    /** How many past weeks form the volume baseline. */
+    private const val BASELINE_WEEKS = 4
 
     data class WeekDayStats(
         val date: LocalDate,
@@ -59,7 +74,7 @@ object TodoStats {
      */
     data class ScoreBreakdown(
         val completion: Int,          // earned, 0..completionMax
-        val completionMax: Int,       // renormalized weight (e.g. 61 when Timeliness is excluded)
+        val completionMax: Int,       // renormalized weight (e.g. 56 when Timeliness is excluded)
         val consistency: Int,
         val consistencyMax: Int,
         val streak: Int,
@@ -67,6 +82,9 @@ object TodoStats {
         val streakDays: Int,          // raw streak (for the explanation)
         val timeliness: Int,          // 0 when nothing has closed yet
         val timelinessMax: Int,       // 0 when excluded
+        val volume: Int,              // v3: 0 when there is no baseline history yet
+        val volumeMax: Int,           // 0 when excluded
+        val baselineCompleted: Float?, // the user's recent weekly average, null without history
         val closedItems: Int,         // occurrences whose due day has passed this week (completed or not)
         val dueWeight: Float,         // Σ priority weights of all due occurrences
         val doneWeight: Float,        // Σ priority weights × behaviour credit earned
@@ -217,10 +235,25 @@ object TodoStats {
             }
         }
 
-        // Score + breakdown (only meaningful with at least one due todo). v2:
+        // Volume baseline (v3): the average completed count of the previous
+        // [BASELINE_WEEKS] weeks that actually had something due. Weeks with
+        // nothing due are skipped (no data ≠ zero effort), and when NO previous
+        // week has any data the component is excluded — a brand-new user is
+        // never scored against an empty past.
+        val baselineCompleted: Float? = (1..BASELINE_WEEKS)
+            .map { back ->
+                val past = weekDays(today.minusWeeks(back.toLong())).map { dayStats(items, it) }
+                if (past.any { it.due > 0 }) past.sumOf { it.completed } else null
+            }
+            .filterNotNull()
+            .takeIf { it.isNotEmpty() }
+            ?.let { it.average().toFloat() }
+
+        // Score + breakdown (only meaningful with at least one due todo). v3:
         // priority-weighted completion (a single bucket — no separate
-        // High-Priority that can sit empty and auto-pass), and components are
-        // EXCLUDED — with the remaining weights rescaled — when their
+        // High-Priority that can sit empty and auto-pass), a volume component
+        // measured against the user's own recent baseline, and components that
+        // are EXCLUDED — with the remaining weights rescaled — when their
         // denominator is 0. Nothing ever earns points for being empty.
         val breakdown = if (due > 0) {
             var dueWeight = 0f
@@ -248,13 +281,26 @@ object TodoStats {
             val timelinessRaw = if (closedItems > 0) {
                 W_TIMELINESS * (1f - (overdue + missed).toFloat() / closedItems)
             } else 0f
+            // Volume: this week's completions against the recent baseline.
+            // At/above your usual volume = full credit (capped at 1 so one
+            // huge week can't bank future points); below it scales down. A
+            // baseline of 0 (history exists but nothing was ever completed)
+            // makes ANY completion a full-credit improvement.
+            val hasBaseline = baselineCompleted != null
+            val baseline = baselineCompleted ?: 0f
+            val volumeRaw = when {
+                !hasBaseline -> 0f
+                baseline <= 0f -> if (completed > 0) W_VOLUME.toFloat() else 0f
+                else -> W_VOLUME * (completed.toFloat() / baseline).coerceIn(0f, 1f)
+            }
             val includedWeight = W_COMPLETION + W_CONSISTENCY + W_STREAK +
-                (if (closedItems > 0) W_TIMELINESS else 0)
+                (if (closedItems > 0) W_TIMELINESS else 0) +
+                (if (hasBaseline) W_VOLUME else 0)
             val scale = 100f / includedWeight
             // Score = round(Σ component scores) — one rounding at the end (per
             // the spec). The breakdown rows round independently, so they may
             // sum to ±1 of this authoritative total.
-            val total = (scale * (completionRaw + consistencyRaw + streakRaw + timelinessRaw))
+            val total = (scale * (completionRaw + consistencyRaw + streakRaw + timelinessRaw + volumeRaw))
                 .roundToInt().coerceIn(0, 100)
             ScoreBreakdown(
                 completion = (scale * completionRaw).roundToInt().coerceIn(0, 100),
@@ -270,6 +316,13 @@ object TodoStats {
                 timelinessMax = if (closedItems > 0) {
                     (scale * W_TIMELINESS).roundToInt().coerceIn(0, 100)
                 } else 0,
+                volume = if (hasBaseline) {
+                    (scale * volumeRaw).roundToInt().coerceIn(0, 100)
+                } else 0,
+                volumeMax = if (hasBaseline) {
+                    (scale * W_VOLUME).roundToInt().coerceIn(0, 100)
+                } else 0,
+                baselineCompleted = baselineCompleted,
                 closedItems = closedItems,
                 dueWeight = dueWeight,
                 doneWeight = doneWeight,

@@ -92,10 +92,21 @@ class QuranReminderWidgetProvider : AppWidgetProvider() {
 
             if (verse != null) {
                 views.setTextViewText(R.id.widget_verse_text, verse.text)
+                // Reference + surah name, plus the compact ayah/total ("255/286")
+                // when the surah counts are known — mirrors the in-app reader.
+                val progress = if (verse.totalAyahs > 0) {
+                    " · " + context.getString(
+                        R.string.quran_ayah_progress_short,
+                        verse.ayahNumber,
+                        verse.totalAyahs
+                    )
+                } else {
+                    ""
+                }
                 views.setTextViewText(
                     R.id.widget_verse_ref,
                     context.getString(R.string.quran_verse_reference, verse.surahNumber, verse.ayahNumber) +
-                        " · " + verse.surahName
+                        " · " + verse.surahName + progress
                 )
             } else {
                 // First run before the download finishes: gentle placeholder.

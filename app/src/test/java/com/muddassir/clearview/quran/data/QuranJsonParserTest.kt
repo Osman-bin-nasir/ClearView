@@ -44,6 +44,26 @@ class QuranJsonParserTest {
     }
 
     @Test
+    fun derivesEachSurahsAyahTotalFromTheDownloadedEdition() {
+        val verses = QuranJsonParser.parse(sample)
+
+        // Counts are counted from the data itself — never hardcoded — so every
+        // verse of a surah carries that surah's total (65 has 2 of the 3 here).
+        assertEquals(2, verses[0].totalAyahs)
+        assertEquals(2, verses[1].totalAyahs)
+        assertEquals(1, verses[2].totalAyahs)
+        assertEquals(mapOf(65 to 2, 66 to 1), QuranJsonParser.surahAyahCounts(verses))
+
+        // The real Al-Faatiha has 7 ayahs: "1 / 7 ayahs" must come from the data.
+        val fatiha = QuranJsonParser.parse(
+            (1..7).joinToString(prefix = "{\"quran\":[", postfix = "]}", separator = ",") {
+                """{ "chapter": 1, "verse": $it, "text": "verse $it" }"""
+            }
+        )
+        assertEquals(7, fatiha.first().totalAyahs)
+    }
+
+    @Test
     fun handlesEmptyVerseList() {
         val empty = """{"quran":[]}"""
         assertTrue(QuranJsonParser.parse(empty).isEmpty())

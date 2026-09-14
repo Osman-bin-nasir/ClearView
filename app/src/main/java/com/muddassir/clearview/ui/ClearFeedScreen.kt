@@ -45,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -154,7 +155,11 @@ fun ClearFeedScreen(modifier: Modifier = Modifier) {
                             type = "text/plain"
                             putExtra(
                                 Intent.EXTRA_TEXT,
-                                "${post.body}\n\n— ${post.author} on Clear View"
+                                context.getString(
+                                    R.string.clear_feed_share_text,
+                                    post.body,
+                                    post.author
+                                )
                             )
                         }
                         runCatching {
@@ -227,7 +232,11 @@ private fun ClearFeedPostCard(
                         }
                     }
                     Text(
-                        text = "${post.handle} · ${relativeTime(post.minutesAgo)}",
+                        text = stringResource(
+                            R.string.clear_feed_handle_time,
+                            post.handle,
+                            relativeTime(post.minutesAgo)
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -262,7 +271,7 @@ private fun ClearFeedPostCard(
                     Icon(
                         imageVector = if (liked) Icons.Filled.Favorite
                         else Icons.Outlined.FavoriteBorder,
-                        contentDescription = "Like",
+                        contentDescription = stringResource(R.string.clear_feed_like),
                         tint = if (liked) Color(0xFFE53935)
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(22.dp)
@@ -278,7 +287,7 @@ private fun ClearFeedPostCard(
                     Icon(
                         imageVector = if (saved) Icons.Filled.Bookmark
                         else Icons.Outlined.BookmarkBorder,
-                        contentDescription = "Save",
+                        contentDescription = stringResource(R.string.clear_feed_save),
                         tint = if (saved) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(22.dp)
@@ -288,7 +297,7 @@ private fun ClearFeedPostCard(
                 IconButton(onClick = onShare) {
                     Icon(
                         Icons.Filled.Share,
-                        contentDescription = "Share",
+                        contentDescription = stringResource(R.string.clear_feed_share),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(22.dp)
                     )
@@ -298,12 +307,27 @@ private fun ClearFeedPostCard(
     }
 }
 
-/** Coarse relative time from a static "minutes ago" value. */
+/**
+ * Coarse relative time from a static "minutes ago" value. Localized through
+ * plurals so "1 minute ago" never renders as "1 minutes ago".
+ */
+@Composable
 private fun relativeTime(minutesAgo: Int): String = when {
-    minutesAgo < 60 -> "${minutesAgo}m ago"
-    minutesAgo < 60 * 24 -> "${minutesAgo / 60}h ago"
-    minutesAgo < 60 * 24 * 7 -> "${minutesAgo / (60 * 24)}d ago"
-    else -> "${minutesAgo / (60 * 24 * 7)}w ago"
+    minutesAgo < 60 -> pluralStringResource(
+        R.plurals.clear_feed_time_minutes, minutesAgo, minutesAgo
+    )
+    minutesAgo < 60 * 24 -> {
+        val hours = minutesAgo / 60
+        pluralStringResource(R.plurals.clear_feed_time_hours, hours, hours)
+    }
+    minutesAgo < 60 * 24 * 7 -> {
+        val days = minutesAgo / (60 * 24)
+        pluralStringResource(R.plurals.clear_feed_time_days, days, days)
+    }
+    else -> {
+        val weeks = minutesAgo / (60 * 24 * 7)
+        pluralStringResource(R.plurals.clear_feed_time_weeks, weeks, weeks)
+    }
 }
 
 /** The feed categories behind the filter chips. */

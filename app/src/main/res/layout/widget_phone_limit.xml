@@ -35,7 +35,7 @@
             android:maxLines="1"
             android:text="@string/widget_phone_limit_title"
             android:textColor="@color/widget_title"
-            android:textSize="10sp"
+            android:textSize="11sp"
             android:textStyle="bold" />
 
         <TextView
@@ -64,7 +64,7 @@
             android:maxLines="1"
             android:text="@string/widget_phone_limit_title"
             android:textColor="@color/widget_title"
-            android:textSize="10sp"
+            android:textSize="11sp"
             android:textStyle="bold" />
 
         <TextView

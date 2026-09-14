@@ -40,6 +40,7 @@ class QuranStore(context: Context) {
                 .remove(KEY_SURAH_TRANSLATION)
                 .remove(KEY_VERSE_TEXT)
                 .remove(KEY_ARABIC_TEXT)
+                .remove(KEY_TOTAL_AYAHS)
                 .apply()
         }
     }
@@ -140,6 +141,7 @@ class QuranStore(context: Context) {
             .putString(KEY_SURAH_TRANSLATION, verse.surahTranslation)
             .putString(KEY_VERSE_TEXT, verse.text)
             .putString(KEY_ARABIC_TEXT, verse.arabicText)
+            .putInt(KEY_TOTAL_AYAHS, verse.totalAyahs)
             .putLong(KEY_LAST_UPDATED, System.currentTimeMillis())
             .apply()
     }
@@ -156,7 +158,10 @@ class QuranStore(context: Context) {
             surahName = prefs.getString(KEY_SURAH_NAME, "") ?: "",
             surahTranslation = prefs.getString(KEY_SURAH_TRANSLATION, "") ?: "",
             text = text,
-            arabicText = prefs.getString(KEY_ARABIC_TEXT, "") ?: ""
+            arabicText = prefs.getString(KEY_ARABIC_TEXT, "") ?: "",
+            // 0 on verses persisted by a build that predates the surah counts;
+            // the repository backfills it from the cached edition.
+            totalAyahs = prefs.getInt(KEY_TOTAL_AYAHS, 0)
         )
     }
 
@@ -217,6 +222,7 @@ class QuranStore(context: Context) {
         const val KEY_SURAH_TRANSLATION = "current_surah_translation"
         const val KEY_VERSE_TEXT = "current_verse_text"
         const val KEY_ARABIC_TEXT = "current_verse_arabic_text"
+        const val KEY_TOTAL_AYAHS = "current_verse_total_ayahs"
         const val KEY_LAST_UPDATED = "current_verse_updated_at"
         const val KEY_REFRESH_INTERVAL_HOURS = "refresh_interval_hours"
         const val KEY_QURAN_NOTIFICATIONS_ENABLED = "quran_notifications_enabled"

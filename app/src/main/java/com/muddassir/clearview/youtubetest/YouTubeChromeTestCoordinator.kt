@@ -13,6 +13,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import com.muddassir.clearview.R
 import com.muddassir.clearview.extractor.ContentExtractor
 import com.muddassir.clearview.matching.KeywordMatcher
 import com.muddassir.clearview.repository.BlockRepository
@@ -1293,6 +1294,24 @@ class YouTubeChromeTestCoordinator(
             canvas.drawText("BLOCK BRAIN ROT", cx, cy + unit * 0.10f, bodyPaint)
         }
 
+        init {
+            // A blocking overlay is still a UI surface: announce it and make it
+            // reachable instead of leaving TalkBack with an invisible view.
+            isFocusable = true
+            contentDescription = context.getString(R.string.player_block_overlay_desc)
+        }
+
+        /**
+         * Accessibility: [onTouchEvent] is overridden, so a click action must
+         * exist. A tap here is deliberately swallowed (the player is blocked),
+         * so activation consumes it the same way.
+         */
+        override fun performClick(): Boolean {
+            super.performClick()
+            onOverlayTapConsumed()
+            return true
+        }
+
         override fun onTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -1313,8 +1332,10 @@ class YouTubeChromeTestCoordinator(
                     val dy = upY - downY
                     val dist = sqrt(dx * dx + dy * dy)
                     if (dist < SWIPE_THRESHOLD_PX) {
-                        // TAP → consume, never reach the player.
-                        onOverlayTapConsumed()
+                        // TAP → consume, never reach the player. Routed through
+                        // performClick() so accessibility activation behaves
+                        // identically to a finger tap.
+                        performClick()
                     } else if (abs(dy) >= SWIPE_MIN_DY_PX && abs(dy) > abs(dx) * SWIPE_DIAGONAL_RATIO) {
                         // Vertical swipe (diagonal-tolerant) → pass to Chrome.
                         onOverlayVerticalSwipe(downX, downY, upX, upY)

@@ -40,7 +40,24 @@ object QuranJsonParser {
                 )
             )
         }
-        return verses
+        // Each verse carries its surah's ayah count, counted straight from the
+        // downloaded edition (nothing hardcoded), so read views can render
+        // "ayah / total ayahs" progress.
+        val totals = surahAyahCounts(verses)
+        if (totals.isEmpty()) return verses
+        return verses.map { v -> v.copy(totalAyahs = totals[v.surahNumber] ?: 0) }
+    }
+
+    /**
+     * Counts the ayahs of every surah present in [verses], keyed by surah
+     * number. Pure + derived from the data, so it also serves the cached-list
+     * backfill path in the repository (and stays unit-testable).
+     */
+    fun surahAyahCounts(verses: List<QuranVerse>): Map<Int, Int> {
+        if (verses.isEmpty()) return emptyMap()
+        val counts = HashMap<Int, Int>(114)
+        for (v in verses) counts[v.surahNumber] = (counts[v.surahNumber] ?: 0) + 1
+        return counts
     }
 
     /**

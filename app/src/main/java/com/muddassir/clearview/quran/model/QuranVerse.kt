@@ -12,6 +12,13 @@ package com.muddassir.clearview.quran.model
  *                        Empty string when the Arabic edition is not cached
  *                        yet (the widget and detail screen still work — they
  *                        just show English).
+ * @property totalAyahs   Number of ayahs in this verse's surah (e.g. 7 for
+ *                        Al-Faatiha). Derived from the downloaded edition —
+ *                        never hardcoded — so the reader can show
+ *                        "ayah / total" progress. 0 when the count isn't known
+ *                        yet (verse persisted by an older build before its
+ *                        surah counts had been derived); the repository
+ *                        backfills it as soon as the cache is parsed.
  */
 data class QuranVerse(
     val surahNumber: Int,
@@ -19,5 +26,6 @@ data class QuranVerse(
     val surahName: String,
     val surahTranslation: String,
     val text: String,
-    val arabicText: String = ""
+    val arabicText: String = "",
+    val totalAyahs: Int = 0
 )

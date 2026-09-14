@@ -2,6 +2,7 @@ package com.muddassir.clearview.media.ui
 
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,13 +15,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,12 +38,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.muddassir.clearview.R
 import com.muddassir.clearview.media.data.LiveStreamCacheStore
@@ -209,19 +213,17 @@ fun LiveTab(
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(if (isLandscape) 0.dp else 52.dp),
+                .height(if (isLandscape) 0.dp else 58.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             items(streams, key = { it.id }) { s ->
-                FilterChip(
+                HaramaynChannelPill(
+                    label = s.title,
+                    name = s.name,
                     selected = s.id == selectedId,
-                    onClick = {
-                        if (s.id != selectedId) {
-                            selectedId = s.id
-                        }
-                    },
-                    label = { Text(s.title) }
+                    onClick = { if (s.id != selectedId) selectedId = s.id }
                 )
             }
         }
@@ -343,6 +345,69 @@ fun LiveTab(
                 }
             }
             Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+/**
+ * One Haramayn channel selector: a clean pill with the channel's display name
+ * over its broadcast name, and a live dot on the selected one. Deliberately
+ * plain text (no emojis) and built from the app's own pill language instead of
+ * Material's [androidx.compose.material3.FilterChip], whose selected chrome
+ * read as an unrelated control inside the immersive live player.
+ */
+@Composable
+private fun HaramaynChannelPill(
+    label: String,
+    name: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val contentColor = if (selected) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(22.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+        },
+        contentColor = contentColor,
+        border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.onPrimary)
+                )
+            }
+            Column {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = contentColor.copy(alpha = 0.75f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
     }
 }

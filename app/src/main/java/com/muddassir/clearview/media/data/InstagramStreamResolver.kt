@@ -24,6 +24,10 @@ object InstagramStreamResolver {
     /**
      * Resolves the direct .mp4 media stream URL for [shortcodeOrUrl].
      * Returns null if the post is an image post or resolution fails.
+     *
+     * Both the /p/ and /reel/ embed pages are tried, in both their captioned
+     * and plain forms: the page that carries the video JSON varies by post
+     * type, and older/newer embeds differ in which one they render.
      */
     suspend fun resolveStreamUrl(shortcodeOrUrl: String): String? = withContext(Dispatchers.IO) {
         val shortcode = extractShortcode(shortcodeOrUrl)
@@ -31,7 +35,9 @@ object InstagramStreamResolver {
 
         val candidateUrls = listOf(
             "https://www.instagram.com/p/$shortcode/embed/captioned/",
-            "https://www.instagram.com/reel/$shortcode/embed/captioned/"
+            "https://www.instagram.com/p/$shortcode/embed/",
+            "https://www.instagram.com/reel/$shortcode/embed/captioned/",
+            "https://www.instagram.com/reel/$shortcode/embed/"
         )
 
         for (candidateUrl in candidateUrls) {
@@ -49,34 +55,8 @@ object InstagramStreamResolver {
                 if (conn.responseCode == HttpURLConnection.HTTP_OK) {
                     val html = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
 
-                    // Pattern 1: Embedded JSON "video_url":"https:\/\/..."
-                    val jsonVideoRegex = Regex(""""video_url"\s*:\s*"([^"]+)"""")
-                    val matchJson = jsonVideoRegex.find(html)?.groupValues?.get(1)
-                    if (!matchJson.isNullOrBlank()) {
-                        val clean = unescapeUrl(matchJson)
-                        if (clean.contains(".mp4") || clean.startsWith("http")) {
-                            Log.d(TAG, "Found video_url in embed JSON for $shortcode")
-                            return@withContext clean
-                        }
-                    }
-
-                    // Pattern 2: HTML5 <video ... src="..."
-                    val videoTagRegex = Regex("""<video[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-                    val matchTag = videoTagRegex.find(html)?.groupValues?.get(1)
-                    if (!matchTag.isNullOrBlank()) {
-                        val clean = unescapeUrl(matchTag)
-                        if (clean.contains(".mp4") || clean.startsWith("http")) {
-                            Log.d(TAG, "Found <video src> for $shortcode")
-                            return@withContext clean
-                        }
-                    }
-
-                    // Pattern 3: Any direct .mp4 CDN link in the payload
-                    val rawMp4Regex = Regex("""https:\\/\\/[^"'\s\\]+?\.mp4[^"'\s\\]*""")
-                    val matchRaw = rawMp4Regex.find(html)?.value
-                    if (!matchRaw.isNullOrBlank()) {
-                        val clean = unescapeUrl(matchRaw)
-                        Log.d(TAG, "Found raw .mp4 link for $shortcode")
+                    findStreamInPayload(html)?.let { clean ->
+                        Log.d(TAG, "Resolved stream for $shortcode from $candidateUrl")
                         return@withContext clean
                     }
                 }
@@ -89,6 +69,48 @@ object InstagramStreamResolver {
 
         null
     }
+
+    /**
+     * The payload patterns that carry the post's mp4 URL, most specific first.
+     * Public so the resolution rules are unit-testable without network access.
+     * Returns the unescaped http(s) .mp4 URL, or null when none is present.
+     */
+    internal fun findStreamInPayload(html: String): String? {
+        if (html.isBlank()) return null
+        for (regex in STREAM_PATTERNS) {
+            val match = regex.find(html)?.groupValues?.get(1) ?: continue
+            val clean = unescapeUrl(match)
+            if (clean.startsWith("http") && clean.contains(".mp4", ignoreCase = true)) {
+                return clean
+            }
+        }
+        // Last resort: a bare .mp4 CDN link, with no key in front of it.
+        val raw = RAW_MP4.find(html)?.value?.let { unescapeUrl(it) }
+        if (!raw.isNullOrBlank() && raw.startsWith("http")) return raw
+        return null
+    }
+
+    private val STREAM_PATTERNS = listOf(
+        // Embedded JSON: "video_url":"https:\/\/...mp4..."
+        Regex(""""video_url"\s*:\s*"([^"]+)""""),
+        // JSON-LD / og metadata: "contentUrl":"...mp4" or og:video content.
+        Regex(""""contentUrl"\s*:\s*"([^"]+)""""),
+        Regex("""property=["']og:video["']\s+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+        // video_versions / progressive download entries: "url":"...mp4"
+        Regex(""""url"\s*:\s*"([^"]+\.mp4[^"]*)"""", RegexOption.IGNORE_CASE),
+        // HTML5 <video src> / <source src>
+        Regex("""<video[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+        Regex("""<source[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+    )
+
+    // A bare CDN link, with or without the JSON-style `\/` escaping. The
+    // backslashes are ALLOWED in the character classes here (the match is
+    // unescaped afterwards) — excluding them is what made the old pattern miss
+    // every escaped URL.
+    private val RAW_MP4 = Regex(
+        """https?:(?:\\?/){2}[^\s"'<>]+?\.mp4[^\s"'<>]*""",
+        RegexOption.IGNORE_CASE
+    )
 
     fun extractShortcode(input: String): String {
         val trimmed = input.trim().removePrefix("ig_")

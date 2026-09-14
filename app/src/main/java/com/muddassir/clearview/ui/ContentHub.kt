@@ -96,6 +96,10 @@ class ContentHubState(appContext: Context) {
     // Offline audio playback (downloaded files). Only one of playingVideo /
     // playingAudio is non-null at a time — playing audio closes the video player.
     var playingAudio by mutableStateOf<DownloadItem?>(null)
+    // The playing audio's queue (a playlist, the Downloads list, or the whole
+    // offline library) + the current index in it — drives Next / Previous.
+    var audioQueue by mutableStateOf<List<DownloadItem>>(emptyList())
+    var audioIndex by mutableStateOf(-1)
     // Vertical fullscreen (YouTube Shorts style): the video fills the whole
     // portrait screen and the bars hide. Reset when the video changes/exits.
     var playerFullscreen by mutableStateOf(false)
@@ -197,7 +201,12 @@ class ContentHubState(appContext: Context) {
             if (verse == null) {
                 verseLoading = true
                 var loaded = withContext(Dispatchers.IO) {
-                    quranRepository.getCurrentVerse() ?: quranRepository.pickRandomVerse()
+                    // The persisted current verse is preferred so the app and the
+                    // home-screen widget never drift apart. backfill() supplies
+                    // the surah ayah count for verses saved by older builds
+                    // (derived from the cached edition, never hardcoded).
+                    (quranRepository.getCurrentVerse() ?: quranRepository.pickRandomVerse())
+                        ?.let { quranRepository.backfillCurrentVerseTotals() ?: it }
                 }
                 if (loaded == null) {
                     // Very first launch: nothing is cached yet, so the persisted
@@ -368,6 +377,19 @@ class ContentHubState(appContext: Context) {
     }
 
     /**
+     * Switches the hub's tab, dismissing any full-screen overlay that belongs
+     * to the PREVIOUS section (currently Haramayn Live).
+     *
+     * Without this, opening Haramayn and then tapping another tab left the live
+     * player composed on top of the new section — the user had to dismiss it
+     * with its own back arrow before reaching the section they had tapped.
+     */
+    fun selectTab(tab: ContentTab) {
+        selectedTab = tab
+        showHaramaynLive = false
+    }
+
+    /**
      * Plays the downloaded audio for [video] immediately (podcast-style),
      * closing the WebView video player if it was open. No-op when the video
      * isn't downloaded yet.
@@ -376,13 +398,44 @@ class ContentHubState(appContext: Context) {
         AudioDownloads.itemFor(video.videoId)?.let { playAudioItem(it) }
     }
 
-    /** Plays [item] (its local audio file) immediately. */
-    fun playAudioItem(item: DownloadItem) {
+    /**
+     * Plays [item] (its local audio file) immediately, inside [queue] when one
+     * is given so the player's Next / Previous buttons walk the SAME context the
+     * user started from (a playlist, the Downloads list, …). Without a queue the
+     * whole offline library becomes the queue, newest first — the same order the
+     * Downloads list shows — so the controls are never dead.
+     */
+    fun playAudioItem(
+        item: DownloadItem,
+        queue: List<DownloadItem> = emptyList()
+    ) {
         playingVideo = null
         shortsQueue = emptyList()
         shortsIndex = -1
+        val resolved = queue.ifEmpty { AudioDownloads.items.value }
+        audioQueue = if (resolved.any { it.videoId == item.videoId }) resolved else resolved + item
+        audioIndex = audioQueue.indexOfFirst { it.videoId == item.videoId }
         playingAudio = item
     }
+
+    /**
+     * Moves within the audio queue: +1 next, -1 previous. No-op at the ends
+     * (the buttons disable there), and a no-op before playback ever started.
+     */
+    fun navigateAudio(delta: Int) {
+        val next = audioIndex + delta
+        if (next in audioQueue.indices) {
+            audioIndex = next
+            playingAudio = audioQueue[next]
+        }
+    }
+
+    /** True when a previous / next track exists in the current audio queue. */
+    val canGoPreviousAudio: Boolean
+        get() = audioIndex > 0 && audioIndex < audioQueue.size
+
+    val canGoNextAudio: Boolean
+        get() = audioIndex >= 0 && audioIndex < audioQueue.size - 1
 
     /** Closes the audio player screen. Playback deliberately CONTINUES in the
      *  background (foreground service + media notification) — like any music
@@ -608,6 +661,9 @@ fun ContentHubTabContent(
         // cheap local read that picks up any new uploads.
         LaunchedEffect(state.selectedTab) {
             if (state.selectedTab == ContentTab.QURAN) state.refreshMediaUpdates()
+            // A section switch always dismisses the Haramayn live overlay, so it
+            // can never sit on top of the section the user just opened.
+            state.showHaramaynLive = false
         }
         // Leaving the player (or switching to a different video) always exits
         // vertical fullscreen — EXCEPT when navigating within the Shorts queue
@@ -634,6 +690,10 @@ fun ContentHubTabContent(
 
             state.playingAudio != null -> AudioPlayerScreen(
                 item = state.playingAudio!!,
+                hasPrevious = state.canGoPreviousAudio,
+                hasNext = state.canGoNextAudio,
+                onPrevious = { state.navigateAudio(-1) },
+                onNext = { state.navigateAudio(1) },
                 onExit = { state.exitAudio() }
             )
 
@@ -664,7 +724,7 @@ fun ContentHubTabContent(
                     if (index < 0) state.markMediaUpdatesSeen()
                 },
                 onPlayOffline = { video -> state.playAudio(video) },
-                onPlayAudio = { item -> state.playAudioItem(item) },
+                onPlayAudio = { item, queue -> state.playAudioItem(item, queue) },
                 onMediaOpened = { state.markMediaUpdatesSeen() },
                 onOpenHaramaynLive = { state.showHaramaynLive = true }
             )

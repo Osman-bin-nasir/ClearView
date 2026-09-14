@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +23,8 @@ import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -65,14 +68,22 @@ import java.io.File
  * Podcast-style offline audio player, designed after the Spotify now-playing
  * screen: a blurred album-art backdrop, large rounded artwork, a bold
  * left-aligned title/channel, an elegant seek slider (elapsed left, time
- * remaining right), a clean transport row (‑10s / play‑pause / +10s) and a
- * playback-speed pill (0.5x–2x) pinned to the bottom corner. Plays the
- * locally downloaded file through [OfflineAudioPlayer] — no network, no
- * WebView. Fully functional in airplane mode.
+ * remaining right), a clean transport row (previous / ‑10s / play‑pause /
+ * +10s / next) and a playback-speed pill (0.5x–2x) pinned to the bottom
+ * corner. Plays the locally downloaded file through [OfflineAudioPlayer] — no
+ * network, no WebView. Fully functional in airplane mode.
+ *
+ * [hasPrevious] / [hasNext] reflect the CURRENT queue the audio was started
+ * from (a playlist, the Downloads list, or the whole offline library); the
+ * buttons disable at either end instead of wrapping around.
  */
 @Composable
 fun AudioPlayerScreen(
     item: DownloadItem,
+    hasPrevious: Boolean = false,
+    hasNext: Boolean = false,
+    onPrevious: () -> Unit = {},
+    onNext: () -> Unit = {},
     onExit: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -204,20 +215,36 @@ fun AudioPlayerScreen(
 
             Spacer(Modifier.height(10.dp))
 
-            // ── Transport controls ──
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // ── Transport controls: previous · ‑10s · play/pause · +10s · next ──
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                IconButton(
+                    onClick = onPrevious,
+                    enabled = hasPrevious,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.SkipPrevious,
+                        contentDescription = "Previous audio",
+                        tint = if (hasPrevious) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
                 IconButton(
                     onClick = { OfflineAudioPlayer.seekTo((positionMs - 10_000L).coerceAtLeast(0L)) },
-                    modifier = Modifier.size(52.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
                         Icons.Filled.Replay10,
                         contentDescription = "Back 10 seconds",
                         tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(30.dp)
+                        modifier = Modifier.size(28.dp)
                     )
                 }
-                Spacer(Modifier.width(26.dp))
+                Spacer(Modifier.width(10.dp))
                 Surface(
                     modifier = Modifier
                         .size(72.dp)
@@ -235,16 +262,29 @@ fun AudioPlayerScreen(
                         )
                     }
                 }
-                Spacer(Modifier.width(26.dp))
+                Spacer(Modifier.width(10.dp))
                 IconButton(
                     onClick = { OfflineAudioPlayer.seekTo(positionMs + 10_000L) },
-                    modifier = Modifier.size(52.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
                         Icons.Filled.Forward10,
                         contentDescription = "Forward 10 seconds",
                         tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(30.dp)
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onNext,
+                    enabled = hasNext,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.SkipNext,
+                        contentDescription = "Next audio",
+                        tint = if (hasNext) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                        modifier = Modifier.size(28.dp)
                     )
                 }
             }

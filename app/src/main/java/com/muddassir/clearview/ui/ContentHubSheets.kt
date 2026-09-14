@@ -864,11 +864,25 @@ private fun VerseSearchRow(
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // "2:255 · Al-Baqara · 255/286" — the compact ayah/total form is
+                // appended only when the surah counts are known (they come from
+                // the cached edition, so this never blocks the list).
+                val progress = if (verse.totalAyahs > 0) {
+                    " · " + stringResource(
+                        R.string.quran_ayah_progress_short,
+                        verse.ayahNumber,
+                        verse.totalAyahs
+                    )
+                } else {
+                    ""
+                }
                 Text(
-                    text = "${verse.surahNumber}:${verse.ayahNumber} · ${verse.surahName}",
+                    text = "${verse.surahNumber}:${verse.ayahNumber} · ${verse.surahName}$progress",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
                 if (onRemove != null) {

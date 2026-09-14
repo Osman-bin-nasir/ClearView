@@ -21,6 +21,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import com.muddassir.clearview.R
 import com.muddassir.clearview.backend.ChannelBlockRepository
 import com.muddassir.clearview.extractor.ContentExtractor
 import com.muddassir.clearview.matching.ContentSnapshot
@@ -982,6 +983,24 @@ class LongVideoBlockCoordinator(
         }
         private val buttonRect = RectF()
 
+        init {
+            // The overlay draws its own "Go to YouTube Home" button, so it is
+            // announced and focusable for assistive technology.
+            isFocusable = true
+            contentDescription = context.getString(R.string.long_video_block_overlay_desc)
+        }
+
+        /**
+         * Accessibility: [onTouchEvent] is overridden, so the view must also
+         * expose a click action — an assistive-technology activation performs
+         * the same action as tapping the drawn button.
+         */
+        override fun performClick(): Boolean {
+            super.performClick()
+            onHomeButtonClicked()
+            return true
+        }
+
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), washPaint)
@@ -1038,10 +1057,12 @@ class LongVideoBlockCoordinator(
                     val dy = upY - downY
                     val dist = sqrt(dx * dx + dy * dy)
                     if (dist < SWIPE_THRESHOLD_PX) {
-                        // TAP → button (local coords) or consume.
+                        // TAP → button (local coords) or consume. The button
+                        // routes through performClick() so a tap and an
+                        // assistive-technology click do exactly the same thing.
                         if (buttonRect.contains(downX, downY)) {
                             Log.i(TAG, "LONG_VIDEO_HOME_BUTTON_TAP x=$downX y=$downY rect=$buttonRect")
-                            onHomeButtonClicked()
+                            performClick()
                         } else {
                             onOverlayTapConsumed()
                         }

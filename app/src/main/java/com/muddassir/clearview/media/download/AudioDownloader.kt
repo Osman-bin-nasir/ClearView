@@ -97,11 +97,26 @@ object AudioDownloader {
         /** Called with the live connection(s) so callers can abort them (cancel). */
         onConnection: (HttpURLConnection) -> Unit = {},
         /** Called with the total size in bytes before the transfer starts. */
-        onSizeKnown: (Long) -> Unit = {}
+        onSizeKnown: (Long) -> Unit = {},
+        /**
+         * A DIRECT media URL to download INSTEAD of resolving a YouTube audio
+         * stream (Instagram videos: their mp4 is muxed, so the file's own
+         * audio track is the audio — there is no FFmpeg/merge step here, the
+         * saved file simply keeps the container's audio).
+         */
+        directUrl: String? = null,
+        /** File extension used for a [directUrl] download. */
+        directExtension: String = "m4a"
     ): Result {
         val store = AudioDownloadStore(context)
         val audioDir = store.audioDir
-        var source: OnDeviceStreamExtractor.AudioSource? = null
+        var source: OnDeviceStreamExtractor.AudioSource? = directUrl?.let {
+            OnDeviceStreamExtractor.AudioSource(
+                url = it,
+                extension = directExtension,
+                mimeType = "video/mp4"
+            )
+        }
         var lastError: DownloadException? = null
 
         for (attempt in 1..MAX_ATTEMPTS) {

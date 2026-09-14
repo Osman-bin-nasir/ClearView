@@ -97,10 +97,11 @@ class TodoStatsTest {
         val stats = TodoStats.weekStats(items, TODAY)
         assertNotNull(stats.score)
         assertTrue(stats.score!! in 1..100)
-        // v2: Completion 55 + Consistency 20 + Streak 15×(1/7) — Timeliness is
-        // EXCLUDED (nothing closed yet this week), so the 90 base rescales:
-        // 100/90 × (55 + 20 + 2.14) ≈ 86.
-        assertEquals(86, stats.score)
+        // v3: Completion 45 + Consistency 18 + Streak 12×(1/7) + Volume 15
+        // (this week's 2 completions meet the 1/week baseline from t4) —
+        // Timeliness is EXCLUDED (nothing closed yet this week), so the 90 base
+        // rescales: 100/90 × (45 + 18 + 1.71 + 15) ≈ 89.
+        assertEquals(89, stats.score)
     }
 
     @Test
@@ -108,18 +109,20 @@ class TodoStatsTest {
         val stats = TodoStats.weekStats(items, TODAY)
         val b = stats.breakdown!!
         // Timeliness excluded (nothing closed yet) → 90 rescales to 100.
-        assertEquals(61, b.completion)     // 100/90 × 55 × 2/2
-        assertEquals(22, b.consistency)    // 100/90 × 20 × 1/1
-        assertEquals(2, b.streak)          // 100/90 × 15 × 1/7
+        assertEquals(50, b.completion)     // 100/90 × 45 × 2/2
+        assertEquals(20, b.consistency)    // 100/90 × 18 × 1/1
+        assertEquals(2, b.streak)          // 100/90 × 12 × 1/7
         assertEquals(0, b.timeliness)      // excluded → no points, no max
         assertEquals(0, b.timelinessMax)
         assertEquals(0, b.closedItems)
-        assertEquals(61, b.completionMax)
-        assertEquals(22, b.consistencyMax)
-        assertEquals(17, b.streakMax)
+        assertEquals(50, b.completionMax)
+        assertEquals(20, b.consistencyMax)
+        assertEquals(13, b.streakMax)
+        // Volume: 2 completed vs the 1/week baseline → full credit.
+        assertEquals(17, b.volume)         // 100/90 × 15 × 1
         assertEquals(0, b.overdueCount)
         assertEquals(0, b.missedCount)
-        assertEquals(86, b.total)
+        assertEquals(89, b.total)
     }
 
     @Test
@@ -134,19 +137,25 @@ class TodoStatsTest {
         val b = stats.breakdown!!
         assertEquals(1, b.overdueCount)   // Tuesday passed uncompleted
         assertEquals(0, b.missedCount)
-        // v2: the missed occurrence is reflected INSIDE the components — no
+        // v3: the missed occurrence is reflected INSIDE the components — no
         // separate penalty lines. Closed items = Mon (done) + Tue (missed);
         // Timeliness = 10 × (1 − 1/2) = 5.
         assertEquals(2, b.closedItems)
-        assertEquals(5, b.timeliness)
-        // Completion 55×(2/6)=18.33 + Consistency 20×(1/3)=6.67 + Streak 0
-        // (yesterday had no completion — the streak must end today or
-        // yesterday) + Timeliness 5 = 30.
+        // 10 × (1 − 1/2) = 5, rescaled by 100/85 (Volume is excluded here) → 6.
+        assertEquals(6, b.timeliness)
+        // Volume is EXCLUDED here (the todo only started today, so there is no
+        // earlier week to compare against). Completion 45×(2/6)=15 +
+        // Consistency 18×(1/3)=6 + Streak 0 (yesterday had no completion — the
+        // streak must end today or yesterday) + Timeliness 5 = 26, rescaled by
+        // 100/(45+18+12+10) → 31.
+        assertNull(b.baselineCompleted)
+        assertEquals(0, b.volumeMax)
         assertEquals(
             "completion=${b.completion}/${b.completionMax} consistency=${b.consistency}/${b.consistencyMax} " +
                 "streak=${b.streak}/${b.streakMax} streakDays=${b.streakDays} timeliness=${b.timeliness}/${b.timelinessMax} " +
+                "volume=${b.volume}/${b.volumeMax} " +
                 "dueW=${b.dueWeight} doneW=${b.doneWeight} score=${stats.score}",
-            30, stats.score
+            31, stats.score
         )
     }
 
@@ -402,6 +411,66 @@ class TodoStatsTest {
         val empty = TodoStats.dayProductivity(listOf(future), TODAY)
         assertEquals(0, empty.due)
         assertEquals(0, empty.level)
+    }
+
+    // ── Volume / effort vs the user's own baseline (v3) ──
+
+    /** Four past weeks that each completed two of two applicable days. */
+    private fun baselineHistory(): List<TodoItem> = (1..4).map { back ->
+        val monday = TodoStats.mondayOf(TODAY).minusWeeks(back.toLong())
+        item(
+            "h$back",
+            start = monday,
+            end = monday.plusDays(1),
+            completions = mapOf(
+                monday.toEpochDay() to at(monday, 9),
+                monday.plusDays(1).toEpochDay() to at(monday.plusDays(1), 9)
+            )
+        )
+    }
+
+    @Test
+    fun `volume compares this week against the user's own recent baseline`() {
+        val history = baselineHistory()
+        val dueTwo = (1..2).map { i ->
+            item(
+                "t$i", start = TODAY, end = TODAY,
+                completions = mapOf(TODAY.toEpochDay() to at(TODAY, 8 + i))
+            )
+        }
+
+        // Both due todos completed → matches the 2/week baseline: full volume.
+        val atBaseline = TodoStats.weekStats(history + dueTwo, TODAY).breakdown!!
+        assertEquals(2f, atBaseline.baselineCompleted!!, 0.001f)
+        assertEquals(atBaseline.volumeMax, atBaseline.volume)
+
+        // Only half the usual volume → roughly half the volume points.
+        val half = TodoStats.weekStats(history + dueTwo.take(1), TODAY).breakdown!!
+        assertTrue("half volume should score below the baseline", half.volume < atBaseline.volume)
+        assertTrue("half volume should still earn something", half.volume > 0)
+
+        // No earlier week at all → the component is excluded, never zeroed in.
+        val fresh = TodoStats.weekStats(dueTwo, TODAY).breakdown!!
+        assertNull(fresh.baselineCompleted)
+        assertEquals(0, fresh.volumeMax)
+        assertEquals(0, fresh.volume)
+    }
+
+    @Test
+    fun `padding the week with undone todos cannot raise the score`() {
+        val history = baselineHistory()
+        val done = item(
+            "d", start = TODAY, end = TODAY,
+            completions = mapOf(TODAY.toEpochDay() to at(TODAY, 8))
+        )
+        val padded = listOf(done) + (1..9).map { i -> item("p$i", start = TODAY, end = TODAY) }
+
+        val focused = TodoStats.weekStats(history + listOf(done), TODAY).score!!
+        val paddedScore = TodoStats.weekStats(history + padded, TODAY).score!!
+        assertTrue(
+            "adding undone todos must not inflate the score ($focused → $paddedScore)",
+            paddedScore <= focused
+        )
     }
 
     @Test

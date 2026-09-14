@@ -15,6 +15,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -25,6 +27,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -187,7 +190,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         if (activity?.intent?.getBooleanExtra(TodoNotifier.EXTRA_OPEN_TODO, false) == true) {
             activity.intent.removeExtra(TodoNotifier.EXTRA_OPEN_TODO)
             selectedTab = MainTab.QURAN
-            hub.selectedTab = ContentTab.QURAN
+            hub.selectTab(ContentTab.QURAN)
             hub.showTodoScreen = true
         }
     }
@@ -196,7 +199,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         if (todoRequested) {
             activity?.consumeTodoScreenRequest()
             selectedTab = MainTab.QURAN
-            hub.selectedTab = ContentTab.QURAN
+            hub.selectTab(ContentTab.QURAN)
             hub.showTodoScreen = true
         }
     }
@@ -212,7 +215,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         ) {
             activity.intent.removeExtra(PhoneLimitCoordinator.EXTRA_OPEN_PHONE_LIMIT)
             selectedTab = MainTab.QURAN
-            hub.selectedTab = ContentTab.QURAN
+            hub.selectTab(ContentTab.QURAN)
             hub.showPhoneLimitSheet = true
         }
     }
@@ -221,7 +224,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         if (phoneLimitRequested) {
             activity?.consumePhoneLimitScreenRequest()
             selectedTab = MainTab.QURAN
-            hub.selectedTab = ContentTab.QURAN
+            hub.selectTab(ContentTab.QURAN)
             hub.showPhoneLimitSheet = true
         }
     }
@@ -304,7 +307,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    "Security & controls",
+                                    stringResource(R.string.block_tab_subtitle),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -322,7 +325,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                         Icons.Filled.Lock
                                     else
                                         Icons.Outlined.LockOpen,
-                                    contentDescription = if (viewModel.hasPassword) "Lock Block tab" else "No password set",
+                                    contentDescription = stringResource(
+                                        if (viewModel.hasPassword) R.string.block_lock_now_locked
+                                        else R.string.block_lock_no_password
+                                    ),
                                     tint = if (viewModel.hasPassword && viewModel.isAppLocked)
                                         MaterialTheme.colorScheme.error
                                     else
@@ -349,7 +355,11 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         NavigationBarItem(
                             selected = selectedTab == tabFor(item.tab),
                             onClick = {
-                                hub.selectedTab = item.tab
+                                // selectTab (not a bare assignment) so the
+                                // Haramayn overlay is dismissed when the user
+                                // moves to another section — including tapping
+                                // the tab they are already on.
+                                hub.selectTab(item.tab)
                                 selectedTab = tabFor(item.tab)
                             },
                             icon = {
@@ -374,9 +384,15 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     }
                     NavigationBarItem(
                         selected = selectedTab == MainTab.BLOCK,
-                        onClick = { selectedTab = MainTab.BLOCK },
+                        onClick = {
+                            selectedTab = MainTab.BLOCK
+                            // The Block tab replaces the hub content entirely —
+                            // a stale Haramayn overlay must not reappear when the
+                            // user comes back to a content tab.
+                            hub.showHaramaynLive = false
+                        },
                         icon = { Icon(Icons.Filled.Shield, contentDescription = null) },
-                        label = { Text("Block") }
+                        label = { Text(stringResource(R.string.block_tab_nav)) }
                     )
                 }
             }
@@ -423,6 +439,11 @@ private fun LockScreen(
     var setupConfirmInput by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isSetupMode by remember { mutableStateOf(!hasPassword) }
+    // Resolved once (not inside the click handlers) so the message follows the
+    // current locale when the configuration changes.
+    val tooShortMessage = stringResource(R.string.block_lock_too_short)
+    val mismatchMessage = stringResource(R.string.block_lock_mismatch)
+    val incorrectMessage = stringResource(R.string.block_lock_incorrect)
 
     Box(
         modifier = Modifier
@@ -430,10 +451,16 @@ private fun LockScreen(
             .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center
     ) {
+        // The setup/unlock forms are taller than a phone in landscape and the
+        // soft keyboard covers the lower half — scrollable + imePadding keeps
+        // the fields and the action button reachable in both cases (the button
+        // used to sit behind the keyboard while typing a password).
         Column(
             modifier = Modifier
-                .padding(32.dp)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .imePadding()
+                .padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Icon(
@@ -446,7 +473,10 @@ private fun LockScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = if (isSetupMode) "Set Block Password" else "Block Tab Locked",
+                text = stringResource(
+                    if (isSetupMode) R.string.block_lock_set_title
+                    else R.string.block_lock_title
+                ),
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold
             )
@@ -454,10 +484,10 @@ private fun LockScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = if (isSetupMode)
-                    "Create a password to protect the Block tab (keywords, websites and protection controls)"
-                else
-                    "Enter password to open Block settings",
+                text = stringResource(
+                    if (isSetupMode) R.string.block_lock_set_note
+                    else R.string.block_lock_note
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
@@ -469,7 +499,7 @@ private fun LockScreen(
                 OutlinedTextField(
                     value = setupPasswordInput,
                     onValueChange = { setupPasswordInput = it; errorMessage = null },
-                    label = { Text("New password") },
+                    label = { Text(stringResource(R.string.block_lock_new_password)) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -480,7 +510,7 @@ private fun LockScreen(
                 OutlinedTextField(
                     value = setupConfirmInput,
                     onValueChange = { setupConfirmInput = it; errorMessage = null },
-                    label = { Text("Confirm password") },
+                    label = { Text(stringResource(R.string.block_lock_confirm_password)) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -498,9 +528,9 @@ private fun LockScreen(
                 Button(
                     onClick = {
                         if (setupPasswordInput.trim().length < 4) {
-                            errorMessage = "Password must be at least 4 characters"
+                            errorMessage = tooShortMessage
                         } else if (setupPasswordInput != setupConfirmInput) {
-                            errorMessage = "Passwords do not match"
+                            errorMessage = mismatchMessage
                         } else {
                             onSetupPassword(setupPasswordInput)
                             setupPasswordInput = ""
@@ -510,13 +540,13 @@ private fun LockScreen(
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Set Password")
+                    Text(stringResource(R.string.block_lock_set_action))
                 }
             } else {
                 OutlinedTextField(
                     value = passwordInput,
                     onValueChange = { passwordInput = it; errorMessage = null },
-                    label = { Text("Password") },
+                    label = { Text(stringResource(R.string.block_lock_password)) },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -537,12 +567,12 @@ private fun LockScreen(
                             passwordInput = ""
                             errorMessage = null
                         } else {
-                            errorMessage = "Incorrect password"
+                            errorMessage = incorrectMessage
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Unlock")
+                    Text(stringResource(R.string.block_lock_unlock_action))
                 }
             }
         }

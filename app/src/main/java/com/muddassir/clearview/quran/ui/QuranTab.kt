@@ -36,6 +36,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -215,8 +217,30 @@ private fun VerseDisplay(
     Text(
         text = "Surah ${v.surahNumber} · Ayah ${v.ayahNumber}",
         style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary
+        color = MaterialTheme.colorScheme.primary,
+        textAlign = TextAlign.Center
     )
+    // How far through the surah the reader is (e.g. "91 / 118 ayahs"). The
+    // total comes from the downloaded edition, so it appears with the first
+    // verse — and stays hidden in the rare pre-migration case where the
+    // persisted verse predates the surah counts and the cache isn't loaded yet.
+    if (v.totalAyahs > 0) {
+        // Resolved outside the semantics{} lambda — that lambda is not a
+        // composable context, so stringResource() cannot be called inside it.
+        val progressDesc = stringResource(
+            R.string.quran_ayah_progress_desc,
+            v.ayahNumber,
+            v.totalAyahs
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = stringResource(R.string.quran_ayah_progress, v.ayahNumber, v.totalAyahs),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.semantics { contentDescription = progressDesc }
+        )
+    }
 
     Spacer(Modifier.height(24.dp))
 

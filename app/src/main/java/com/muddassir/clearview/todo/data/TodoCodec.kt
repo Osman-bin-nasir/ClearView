@@ -454,6 +454,17 @@ object TodoCodec {
     fun deletedOnly(items: List<TodoItem>, id: String): List<TodoItem> = removed(items, id)
 
     /**
+     * Deletes [id] **together with its history** — the item leaves the store
+     * entirely, so its completions, attempts, logged time, past scores, streak
+     * contributions and heatmap cells all disappear. This is the destructive
+     * counterpart of [removed] (which keeps the history for statistics) and is
+     * only ever called behind the Delete dialog's explicit "delete history"
+     * choice.
+     */
+    fun removedWithHistory(items: List<TodoItem>, id: String): List<TodoItem> =
+        items.filterNot { it.id == id }
+
+    /**
      * Marks [id] completed on [day] — STRICT completion, never a toggle: a
      * day already completed stays completed. Returns the new list. Callers
      * are responsible for the date rule (a todo can only be completed on a
@@ -542,6 +553,13 @@ object TodoCodec {
                     }
                     TodoFilter.TEMPORARY -> visible.filter { it.type == TodoType.TEMPORARY }
                     TodoFilter.PERMANENT -> visible.filter { it.type == TodoType.PERMANENT }
+                    // Completed (today): ticked-off todos that were due today —
+                    // the "what did I already get done" view. A todo completed
+                    // on a day it isn't due is never shown here (same rule the
+                    // Today cards use), and archived todos stay in History.
+                    TodoFilter.COMPLETED -> visible.filter {
+                        isActiveOn(it, today) && completedOn(it, today)
+                    }
                     else -> emptyList()
                 }
             }
@@ -929,7 +947,14 @@ object TodoCodec {
 
 /** The list filters offered by the Todo screen (in the exact UI order). */
 enum class TodoFilter {
-    TODAY, UPCOMING, HISTORY, ALL, TEMPORARY, PERMANENT
+    TODAY,
+    UPCOMING,
+    /** Everything actionable today that is already ticked off. */
+    COMPLETED,
+    HISTORY,
+    ALL,
+    TEMPORARY,
+    PERMANENT
 }
 
 /** The list sort orders offered by the Todo screen. */

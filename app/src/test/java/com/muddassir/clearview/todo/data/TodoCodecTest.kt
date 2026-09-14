@@ -278,6 +278,35 @@ class TodoCodecTest {
         assertEquals(listOf("b", "f", "g"), TodoCodec.filter(items, TodoFilter.HISTORY, TODAY).map { it.id })
         assertEquals(listOf("a", "b", "e"), TodoCodec.filter(items, TodoFilter.TEMPORARY, TODAY).map { it.id })
         assertEquals(listOf("c", "d"), TodoCodec.filter(items, TodoFilter.PERMANENT, TODAY).map { it.id })
+        // Completed = ticked off AND due today. "e"'s completion is on a future
+        // day, and "g" is archived — neither belongs in today's completed set.
+        assertEquals(listOf("b"), TodoCodec.filter(items, TodoFilter.COMPLETED, TODAY).map { it.id })
+    }
+
+    @Test
+    fun `delete with history drops the item while a plain delete keeps it`() {
+        val at = 1_700_000_000_000L
+        val items = listOf(
+            item("keep", start = TODAY, end = TODAY),
+            item(
+                "gone",
+                start = TODAY.minusDays(2),
+                end = TODAY.minusDays(1),
+                completions = mapOf(TODAY.minusDays(2).toEpochDay() to at)
+            )
+        )
+
+        // Plain delete: the item stays (soft-deleted) so statistics keep it.
+        val kept = TodoCodec.removed(items, "gone")
+        assertEquals(1, TodoStats.weekStats(kept, TODAY.minusDays(2)).completed)
+
+        // Delete WITH history: the item leaves the store entirely, so it stops
+        // counting towards every statistic.
+        val purged = TodoCodec.removedWithHistory(items, "gone")
+        assertEquals(listOf("keep"), purged.map { it.id })
+        assertEquals(0, TodoStats.weekStats(purged, TODAY.minusDays(2)).completed)
+        assertTrue(TodoCodec.historyCompleted(purged, TODAY).none { it.item.id == "gone" })
+        assertEquals(0, TodoStats.streak(purged, TODAY.minusDays(2)))
     }
 
     @Test

@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FilterList
@@ -115,6 +116,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.muddassir.clearview.R
 import com.muddassir.clearview.media.data.MediaLibraryStore
 import com.muddassir.clearview.media.data.MediaRepository
@@ -172,7 +175,7 @@ fun MediaTab(
     /** Plays the downloaded audio for [video] instead of the video (offline). */
     onPlayOffline: (MediaVideo) -> Unit = {},
     /** Opens the podcast-style audio player for a downloaded item. */
-    onPlayAudio: (DownloadItem) -> Unit = {},
+    onPlayAudio: (DownloadItem, List<DownloadItem>) -> Unit = { _, _ -> },
     /** Fired when the Media tab is shown (marks channel updates as seen). */
     onMediaOpened: () -> Unit = {},
     /** Opens the Makkah &amp; Madinah live broadcasts (Haramayn Live shortcut). */
@@ -327,6 +330,9 @@ fun MediaTab(
     // A video the user chose to seed a NEW playlist with (via the ⋮ menu's
     // "New playlist with this video" — routed through the name dialog).
     var pendingCreateWithVideo by remember { mutableStateOf<MediaVideo?>(null) }
+    // The Instagram post expanded from the grid (null = nothing expanded);
+    // tapping a tile opens it full screen.
+    var expandedPost by remember { mutableStateOf<MediaVideo?>(null) }
     val userPlaylists = remember(playlistRevision) { userPlaylistStore.getPlaylists() }
     val selectedUserPlaylist = remember(userPlaylists, selectedUserPlaylistId) {
         userPlaylists.firstOrNull { it.id == selectedUserPlaylistId }
@@ -569,11 +575,24 @@ fun MediaTab(
                 it.channelName.contains(q, ignoreCase = true)
         }
     }
-    val shorts = searchResults.filter { it.isShort }
-    // YouTube long videos first, then Instagram long videos directly below them
-    // (stable sort preserves each group's newest-first order).
-    val longs = searchResults.filterNot { it.isShort }
-        .sortedBy { if (it.platform == MediaPlatform.INSTAGRAM) 1 else 0 }
+    // Shorts are YouTube Shorts only — an Instagram Reel is a NORMAL video
+    // here (same row, resume and Continue Watching as any YouTube video).
+    val shorts = searchResults.filter { it.isShortsEntry }
+    // YouTube long videos first, then Instagram Reels/videos directly below
+    // them (stable sort preserves each group's newest-first order). Still
+    // Instagram posts are NOT video rows — they get the square grid below.
+    val longs = searchResults.filterNot { it.isShortsEntry || it.isInstagramImage }
+        .sortedBy { if (it.isInstagram) 1 else 0 }
+    // Instagram photo / carousel posts: small square tiles in a grid AFTER the
+    // Videos section (tap one to expand the post full screen).
+    val instagramPosts = searchResults.filter { it.isInstagramImage }
+    // The offline tracks behind the feed's audio entries, and the queue a
+    // playlist context plays them with (its own audio entries, in order) — this
+    // is what the audio player's Next / Previous buttons walk.
+    val downloadedItems = AudioDownloads.items.value
+    val playlistAudioQueue = remember(searchResults, downloadedItems) {
+        searchResults.mapNotNull { v -> downloadedItems.firstOrNull { it.videoId == v.videoId } }
+    }
     val isSearching = searchActive && searchQuery.isNotBlank()
     val matchingChannels = remember(channels, searchQuery, isSearching) {
         if (!isSearching) emptyList()
@@ -596,7 +615,7 @@ fun MediaTab(
         if (feedIsPlaylist || feedIsUserPlaylist) emptyList()
         else channelVideos
             .filter { v ->
-                !v.isShort && !v.isLive &&
+                !v.isShortsEntry && !v.isLive &&
                     (progressStore.get(v.videoId)?.let {
                         it >= 0.02f && it < 0.9f
                     } ?: false)
@@ -963,30 +982,7 @@ fun MediaTab(
                             }
                         }
                     }
-                    val isInstagramChannel = filterChannelId?.startsWith("ig_") == true ||
-                        (searchResults.isNotEmpty() && searchResults.all { it.platform == MediaPlatform.INSTAGRAM })
-
-                    if (isInstagramChannel && !feedIsUserPlaylist) {
-                        item(key = "instagram-posts-header") {
-                            SectionHeader(
-                                title = "Posts",
-                                isLoading = feedLoading,
-                                showingCached = feedCached
-                            )
-                        }
-                        items(searchResults, key = { it.videoId }) { post ->
-                            InstagramMediaCard(
-                                video = post,
-                                onClick = { playLong(post) },
-                                onHide = {
-                                    libraryStore.hideVideo(post)
-                                    libraryRevision++
-                                },
-                                progressStore = progressStore
-                            )
-                        }
-                    } else {
-                        if (shorts.isNotEmpty() && !feedIsUserPlaylist) {
+                    if (shorts.isNotEmpty() && !feedIsUserPlaylist) {
                             item(key = "shorts-header") {
                                 SectionHeader(
                                     title = "Shorts",
@@ -1061,7 +1057,39 @@ fun MediaTab(
                                 )
                             }
                         }
-                    }
+
+                        // ── Instagram posts: a grid of small square tiles AFTER
+                        // the video rows (Reels stay up there with the videos).
+                        // Tapping a tile expands the post full screen.
+                        if (instagramPosts.isNotEmpty() && !feedIsUserPlaylist) {
+                            item(key = "instagram-posts-header") {
+                                SectionHeader(
+                                    title = "Instagram Posts",
+                                    isLoading = feedLoading,
+                                    showingCached = feedCached
+                                )
+                            }
+                            items(instagramPosts.chunked(3)) { row ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    row.forEach { post ->
+                                        InstagramPostTile(
+                                            video = post,
+                                            progressStore = progressStore,
+                                            modifier = Modifier.weight(1f),
+                                            onClick = { expandedPost = post }
+                                        )
+                                    }
+                                    // A short last row keeps its tiles square
+                                    // (the filler cells share the same weight).
+                                    repeat(3 - row.size) {
+                                        Spacer(Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                        }
                     // ── User playlist: the hand-picked ORDER matters, so every
                     // video renders as one ordered row list (no shorts/longs
                     // split, no feed filters).
@@ -1083,12 +1111,26 @@ fun MediaTab(
                             // Audio entries — device imports (device- ids) or
                             // the downloaded audio of a YouTube video
                             // (isOfflineAudio) — are offline tracks, not YouTube
-                            // videos: tapping plays the audio instead of opening
-                            // the player. If that audio was deleted since the
-                            // entry was added, fall back to the video rather
-                            // than a dead tap.
+                            // videos: they render as the SHARED audio card and
+                            // tapping plays the audio instead of opening the
+                            // player. If that audio was deleted since the entry
+                            // was added, fall back to the video card rather than
+                            // a dead tap.
                             val isAudioEntry =
                                 video.isOfflineAudio || video.videoId.startsWith("device-")
+                            val audioItem = if (isAudioEntry) {
+                                downloadedItems.firstOrNull { it.videoId == video.videoId }
+                            } else {
+                                null
+                            }
+                            if (audioItem != null) {
+                                MiniAudioCard(
+                                    item = audioItem,
+                                    onPlay = { onPlayAudio(audioItem, playlistAudioQueue) },
+                                    onAddToPlaylist = { pendingAddToPlaylist = video },
+                                    onDelete = { pendingDeleteDownload = video }
+                                )
+                            } else {
                             LongVideoCard(
                                 video = video,
                                 progressStore = progressStore,
@@ -1127,6 +1169,7 @@ fun MediaTab(
                                 // video) stay off inside the playlist.
                                 inPlaylist = true
                             )
+                            }
                         }
                     }
                 }
@@ -1427,6 +1470,20 @@ fun MediaTab(
                 showAddVideosPicker = false
             },
             onDismiss = { showAddVideosPicker = false }
+        )
+    }
+
+    // ── Instagram post expanded from the grid (tapping a tile) ─────
+    expandedPost?.let { post ->
+        InstagramPostViewer(
+            video = post,
+            progressStore = progressStore,
+            onHide = {
+                libraryStore.hideVideo(post)
+                libraryRevision++
+                expandedPost = null
+            },
+            onDismiss = { expandedPost = null }
         )
     }
 
@@ -2304,11 +2361,145 @@ private fun LongVideoCard(
 }
 
 /**
- * Dedicated card for Instagram mixed media posts (1:1 format, media on top,
- * Creator, Caption, and Date underneath, with an explicit Open on Instagram action).
+ * One tile in the Instagram grid: a small square thumbnail, exactly like a
+ * profile grid tile. Tapping it expands the post ([InstagramPostViewer]).
  */
 @Composable
-private fun InstagramMediaCard(
+private fun InstagramPostTile(
+    video: MediaVideo,
+    progressStore: WatchProgressStore,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val watchRev by WatchProgressStore.revisionFlow.collectAsState()
+    val fraction = remember(video.videoId, watchRev) { progressStore.get(video.videoId) }
+    val watched = (fraction ?: 0f) >= 0.9f
+
+    Card(
+        onClick = onClick,
+        modifier = modifier.aspectRatio(1f),
+        shape = RoundedCornerShape(6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+        )
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (video.thumbnailUrl.isNotBlank()) {
+                RemoteImage(
+                    url = video.thumbnailUrl,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+            // Carousel posts get the stacked-squares badge, like Instagram's grid.
+            if (video.instagramType == InstagramMediaType.CAROUSEL) {
+                Surface(
+                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
+                    shape = RoundedCornerShape(4.dp),
+                    color = Color.Black.copy(alpha = 0.5f)
+                ) {
+                    Icon(
+                        Icons.Filled.Collections,
+                        contentDescription = "Carousel",
+                        tint = Color.White,
+                        modifier = Modifier.padding(2.dp).size(14.dp)
+                    )
+                }
+            }
+            if (watched) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.4f))
+                )
+                Icon(
+                    Icons.Filled.Check,
+                    contentDescription = "Watched",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.align(Alignment.Center).size(26.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The EXPANDED Instagram post, opened by tapping a grid tile: a full-screen,
+ * scrollable view of the post's media, creator, caption and date, plus its
+ * actions (mark watched / unwatched, hide post).
+ */
+@Composable
+private fun InstagramPostViewer(
+    video: MediaVideo,
+    progressStore: WatchProgressStore,
+    onHide: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close post")
+                    }
+                    Text(
+                        text = video.channelName.ifBlank { "Instagram post" },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    InstagramPostView(
+                        video = video,
+                        onClick = {},
+                        onHide = onHide,
+                        progressStore = progressStore
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The post's own card (1:1 media on top, creator / caption / date underneath,
+ * with the ⋮ actions: mark watched / unwatched, hide post). Rendered inside
+ * [InstagramPostViewer] once the user expands a grid tile.
+ */
+@Composable
+private fun InstagramPostView(
     video: MediaVideo,
     onClick: () -> Unit,
     onHide: () -> Unit,

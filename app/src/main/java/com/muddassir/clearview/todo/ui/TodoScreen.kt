@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -78,10 +80,13 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -124,6 +129,35 @@ private fun historyDateFormat(locale: Locale): DateTimeFormatter =
 
 private fun monthNameFormat(locale: Locale): DateTimeFormatter =
     DateTimeFormatter.ofPattern("MMMM yyyy", locale)
+
+/** Short month name for the heatmap's month labels ("Aug", "Sep"). */
+private fun monthShortFormat(locale: Locale): DateTimeFormatter =
+    DateTimeFormatter.ofPattern("MMM", locale)
+
+/** How many months the productivity heatmap covers (including the current one). */
+private const val HEATMAP_MONTHS = 6
+
+/** Heatmap geometry: one square per day, one column per week. */
+private val HEATMAP_CELL = 15.dp
+private val HEATMAP_GAP = 3.dp
+private val HEATMAP_MONTH_GAP = 8.dp
+private val HEATMAP_LABEL_ROW = 16.dp
+
+/**
+ * The filter chips, in display order, with their label resources. Declared once
+ * so the chip row can never drift out of sync with the filter enum (a new
+ * filter that is forgotten here is also caught by the exhaustive `when` in
+ * [ListHeader]).
+ */
+private val FILTER_CHIPS = listOf(
+    TodoFilter.TODAY to R.string.todo_filter_today,
+    TodoFilter.UPCOMING to R.string.todo_filter_upcoming,
+    TodoFilter.COMPLETED to R.string.todo_filter_completed,
+    TodoFilter.HISTORY to R.string.todo_filter_history,
+    TodoFilter.ALL to R.string.todo_filter_all,
+    TodoFilter.TEMPORARY to R.string.todo_filter_temporary,
+    TodoFilter.PERMANENT to R.string.todo_filter_permanent
+)
 
 /** Which metric the weekly bar graph shows. */
 private enum class BarMode { COMPLETED, ATTEMPTED, INCOMPLETE, TOTAL }
@@ -307,6 +341,17 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
             .toSortedMap(compareBy { it })
     }
     val todayAllDone = dueToday > 0 && completedToday == dueToday
+    // How many todos each filter would show — rendered inside the chip so the
+    // user can see where things are without tapping through every filter.
+    val filterCounts = remember(items, today, nowMillis) {
+        FILTER_CHIPS.associate { (option, _) ->
+            option to if (option == TodoFilter.HISTORY) {
+                TodoCodec.historySorted(items, today, nowMillis).size
+            } else {
+                TodoCodec.filter(items, option, today, nowMillis).size
+            }
+        }
+    }
     // Snoozed reminders, per todo: "1:58 PM → 2:08 PM" (original reminder time
     // → new snoozed fire time). Shown on the card's meta line until the
     // snoozed alarm fires (or the snooze is cancelled).
@@ -415,7 +460,8 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
             }
         }
 
-        // ── Filter chips: Today · Upcoming · History · All · Temporary · Permanent ──
+        // ── Filter chips: Today · Upcoming · Completed · History · All ·
+        //    Temporary · Permanent, each with its live count ──
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -423,18 +469,22 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
                 .padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            listOf(
-                TodoFilter.TODAY to R.string.todo_filter_today,
-                TodoFilter.UPCOMING to R.string.todo_filter_upcoming,
-                TodoFilter.HISTORY to R.string.todo_filter_history,
-                TodoFilter.ALL to R.string.todo_filter_all,
-                TodoFilter.TEMPORARY to R.string.todo_filter_temporary,
-                TodoFilter.PERMANENT to R.string.todo_filter_permanent
-            ).forEach { (option, label) ->
+            FILTER_CHIPS.forEach { (option, label) ->
+                // The count is part of the label so screen readers announce it
+                // too ("Today · 3"); it always matches the list below because
+                // both come from the same TodoCodec call.
                 FilterChip(
                     selected = filter == option,
                     onClick = { filter = option },
-                    label = { Text(stringResource(label)) }
+                    label = {
+                        Text(
+                            text = stringResource(
+                                R.string.todo_chip_with_count,
+                                stringResource(label),
+                                filterCounts[option] ?: 0
+                            )
+                        )
+                    }
                 )
             }
         }
@@ -534,7 +584,17 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
                         else -> {
                             if (filtered.isEmpty()) {
                                 item {
-                                    EmptyLine(stringResource(R.string.todo_no_match))
+                                    // "Completed" gets its own nudge — nothing done
+                                    // yet is a normal state, not a failed search.
+                                    EmptyLine(
+                                        stringResource(
+                                            if (filter == TodoFilter.COMPLETED) {
+                                                R.string.todo_completed_none
+                                            } else {
+                                                R.string.todo_no_match
+                                            }
+                                        )
+                                    )
                                 }
                             } else {
                                 items(filtered, key = { it.id }) { todo ->
@@ -701,31 +761,27 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
         )
     }
 
-    // ── Delete confirmation ──
+    // ── Delete confirmation (with an explicit history choice) ──
     pendingDelete?.let { item ->
-        AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text(stringResource(R.string.todo_delete_confirm_title)) },
-            text = { Text(stringResource(R.string.todo_delete_confirm_text, item.title)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    // Cancel its alarms first — after removal the store no
-                    // longer knows this todo.
-                    TodoScheduler.cancelTodo(context, item)
-                    save(TodoCodec.removed(items, item.id))
-                    pendingDelete = null
-                }) {
-                    Text(
-                        text = stringResource(R.string.todo_delete_confirm),
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
+        DeleteTodoDialog(
+            item = item,
+            onConfirm = { deleteHistory ->
+                // Cancel its alarms first — after removal the store no longer
+                // knows this todo.
+                TodoScheduler.cancelTodo(context, item)
+                save(
+                    if (deleteHistory) {
+                        TodoCodec.removedWithHistory(items, item.id)
+                    } else {
+                        // Default: keep the history so streaks, the heatmap and
+                        // the weekly score never lose a completed day by
+                        // accident.
+                        TodoCodec.removed(items, item.id)
+                    }
+                )
+                pendingDelete = null
             },
-            dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) {
-                    Text(stringResource(R.string.todo_cancel))
-                }
-            }
+            onDismiss = { pendingDelete = null }
         )
     }
 
@@ -816,6 +872,7 @@ private fun ListHeader(
                     TodoFilter.TODAY -> R.string.todo_today_title
                     TodoFilter.UPCOMING -> R.string.todo_upcoming_title
                     TodoFilter.ALL -> R.string.todo_all_title
+                    TodoFilter.COMPLETED -> R.string.todo_completed_title
                     TodoFilter.HISTORY -> R.string.todo_history_title
                     TodoFilter.TEMPORARY -> R.string.todo_temporary_title
                     TodoFilter.PERMANENT -> R.string.todo_permanent_title
@@ -848,7 +905,7 @@ private fun ListHeader(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = stringResource(R.string.todo_daily_target_label, target),
+                        text = pluralStringResource(R.plurals.todo_daily_target_label, target, target),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1011,23 +1068,30 @@ private fun TodoCard(
                     // Today-only: a completed todo keeps its checkbox — ticked,
                     // and tapping it again un-completes. Only a strict-interval
                     // todo whose window already closed renders it DISABLED
-                    // (locked as done, "can't redo" both ways).
+                    // (locked as done, "can't redo" both ways). The title is
+                    // part of the description because the checkbox is the only
+                    // thing a screen reader sees here.
+                    val toggleDesc = stringResource(R.string.todo_checkbox_desc, item.title)
                     Checkbox(
                         checked = completedToday,
                         onCheckedChange = { onToggle() },
-                        enabled = !toggleLocked
+                        enabled = !toggleLocked,
+                        modifier = Modifier.semantics { contentDescription = toggleDesc }
                     )
                 } else {
-                    // Upcoming / not applicable today / window not yet open: no
-                    // completion checkbox — a calendar icon marks it as scheduled.
+                    // No completion checkbox here (not the Today view, not
+                    // applicable, or the window hasn't opened): a green tick
+                    // marks an already-completed todo, a calendar marks a
+                    // scheduled one.
                     Box(
                         modifier = Modifier.size(48.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            Icons.Filled.DateRange,
+                            if (completedToday) Icons.Filled.CheckCircle else Icons.Filled.DateRange,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            tint = if (completedToday) DONE_GREEN
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -1373,6 +1437,93 @@ private fun ResetHistoryDialog(
 }
 
 /**
+ * Delete confirmation. The two outcomes are genuinely different, so the choice
+ * is explicit instead of hiding behind one destructive button:
+ *  - toggle OFF (default): the todo leaves your lists, but its history stays —
+ *    streaks, the heatmap and the weekly score keep every day already earned;
+ *  - toggle ON: the todo AND its history go, and every statistic drops it.
+ *
+ * The explanation below the toggle always describes the CURRENT choice, and
+ * the toggle is only offered when there actually is history to lose (a todo
+ * with no recorded days has nothing to choose between).
+ */
+@Composable
+private fun DeleteTodoDialog(
+    item: TodoItem,
+    onConfirm: (deleteHistory: Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var deleteHistory by remember(item.id) { mutableStateOf(false) }
+    val completedDays = item.completions.size
+    val hasHistory = completedDays > 0 || item.events.isNotEmpty()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.todo_delete_confirm_title)) },
+        text = {
+            Column {
+                Text(
+                    text = stringResource(R.string.todo_delete_confirm_text, item.title),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                if (!hasHistory) return@Column
+                Spacer(Modifier.height(10.dp))
+                if (completedDays > 0) {
+                    Text(
+                        text = pluralStringResource(
+                            R.plurals.todo_delete_history_days,
+                            completedDays,
+                            completedDays
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
+                // The whole row is tappable — an obvious target on a phone.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { deleteHistory = !deleteHistory },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = deleteHistory,
+                        onCheckedChange = { deleteHistory = it }
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = stringResource(R.string.todo_delete_history_toggle),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Text(
+                    text = stringResource(
+                        if (deleteHistory) R.string.todo_delete_history_on
+                        else R.string.todo_delete_history_off
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (deleteHistory) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(deleteHistory) }) {
+                Text(
+                    text = stringResource(R.string.todo_delete_confirm),
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.todo_cancel)) }
+        }
+    )
+}
+
+/**
  * History entries GROUPED by their last occurrence date — a clean date header
  * followed by that day's cards, newest date first.
  */
@@ -1538,7 +1689,12 @@ private fun WeeklyProgressSection(
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = stringResource(R.string.todo_weekly_count, stats.completed, stats.due),
+                text = pluralStringResource(
+                    R.plurals.todo_weekly_count,
+                    stats.due,
+                    stats.completed,
+                    stats.due
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.weight(1f)
             )
@@ -1554,77 +1710,6 @@ private fun WeeklyProgressSection(
             progress = { stats.rate },
             modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
         )
-    }
-}
-
-/**
- * Weekly Productivity Score — tapping it opens the full breakdown dialog.
- * A week with no due todos (v2 "empty week") deliberately shows NO numeric
- * score: a subdued "No todos due this week" message instead — a 0/0 week
- * must never silently become a number.
- */
-@Composable
-private fun WeeklyScoreSection(stats: TodoStats.WeekStats, onClick: () -> Unit) {
-    val score = stats.score
-    val label = score?.let {
-        stringResource(
-            when {
-                it >= 80 -> R.string.todo_score_excellent
-                it >= 60 -> R.string.todo_score_good
-                it >= 40 -> R.string.todo_score_fair
-                else -> R.string.todo_score_low
-            }
-        )
-    }
-    Card(
-        // An empty week has no breakdown to show — keep the card readable but
-        // not tappable (tapping would open an empty dialog).
-        onClick = onClick,
-        enabled = score != null,
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = stringResource(R.string.todo_weekly_score),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = stringResource(
-                        if (score == null) R.string.todo_score_empty_week
-                        else R.string.todo_score_tap_hint
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (score == null) {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-            }
-            if (score != null) {
-                Text(
-                    text = stringResource(R.string.todo_score_value, score),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = label ?: "",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
     }
 }
 
@@ -1684,6 +1769,23 @@ private fun ScoreBreakdownDialog(stats: TodoStats.WeekStats, onDismiss: () -> Un
                         val onTime = (b.closedItems - b.overdueCount - b.missedCount).coerceAtLeast(0)
                         stringResource(
                             R.string.todo_score_expl_timeliness, onTime, b.closedItems
+                        )
+                    }
+                )
+                ScoreRow(
+                    label = stringResource(R.string.todo_score_component_volume),
+                    value = b.volume,
+                    max = b.volumeMax,
+                    // Volume is measured against the user's OWN recent baseline,
+                    // so it rewards doing more than usual without ever rewarding
+                    // simply creating more todos.
+                    explanation = if (b.baselineCompleted == null) {
+                        stringResource(R.string.todo_score_expl_volume_none)
+                    } else {
+                        stringResource(
+                            R.string.todo_score_expl_volume,
+                            stats.completed,
+                            b.baselineCompleted.roundToInt()
                         )
                     }
                 )
@@ -1750,95 +1852,18 @@ private fun ScoreRow(
     }
 }
 
-/** Weekly Insights — the exact 5-row structure with distinct emojis. */
-@Composable
-private fun InsightsSection(stats: TodoStats.WeekStats) {
-    if (stats.due <= 0) return
-    val rows = mutableListOf<Pair<String, String>>()
-    val locale = LocalConfiguration.current.locales[0]
-    stats.bestDay?.let { best ->
-        val dayName = best.date.dayOfWeek.getDisplayName(TextStyle.FULL, locale)
-        rows.add(
-            "🔥" to stringResource(
-                R.string.todo_insight_best_day, dayName, (best.rate * 100).toInt()
-            )
-        )
-    }
-    rows.add("📈" to stringResource(R.string.todo_insight_completion, stats.percent))
-    rows.add("📅" to stringResource(R.string.todo_insight_active_days, stats.activeDays))
-    rows.add(
-        "⚡" to (if (stats.streak > 0) {
-            pluralStringResource(R.plurals.todo_streak, stats.streak, stats.streak)
-        } else {
-            stringResource(R.string.todo_insight_streak_none)
-        })
-    )
-    rows.add("🎯" to pluralStringResource(
-        R.plurals.todo_insight_remaining, stats.remainingToday, stats.remainingToday
-    ))
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = stringResource(R.string.todo_weekly_insights),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(Modifier.height(8.dp))
-        rows.forEach { (emoji, text) ->
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(text = emoji, fontSize = 16.sp, modifier = Modifier.width(30.dp))
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        // First week — no previous week to compare against. Otherwise show the
-        // week-over-week comparison once real previous-week data exists.
-        if (stats.firstWeek) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(text = "🌱", fontSize = 16.sp, modifier = Modifier.width(30.dp))
-                Text(
-                    text = stringResource(R.string.todo_insight_first_week),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        } else {
-            stats.improvementPoints?.let { points ->
-                val sign = if (points > 0) "+" else ""
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(text = "📊", fontSize = 16.sp, modifier = Modifier.width(30.dp))
-                    Text(
-                        text = stringResource(R.string.todo_insight_improvement, "$sign$points"),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-    }
-}
-
 /**
- * The consolidated PRODUCTIVITY DASHBOARD — one surface replacing the old
- * scattered Weekly Progress / Weekly Score / Insights / Statistics sections.
- * It highlights the current + longest streak, the weekly score with its
- * week-over-week trend, the behaviour counts (completed / attempted /
- * incomplete), the weekly bar graph and the productivity heatmap. Every figure
- * comes from [TodoStats.productivitySummary] / [TodoStats.occurrenceScore], so
- * the tiles and the sections can never disagree.
+ * The consolidated PRODUCTIVITY DASHBOARD. A single merged "Weekly Insights &
+ * Statistics" card carries every number worth reading — completion rate,
+ * completed vs pending, weekly progress, volume against the user's own
+ * baseline, both streaks, the weekly score (tap for the full breakdown), best
+ * day, most productive window and the month summary — followed by the
+ * attempted-aware weekly bar graph and the month-organised heatmap.
+ *
+ * Before v3 the same figures were repeated across a tile row, a trend card,
+ * four separate sections and the score card; now nothing is shown twice, and
+ * every value comes from the same [TodoStats.weekStats] /
+ * [TodoStats.productivitySummary] call, so no two surfaces can disagree.
  */
 @Composable
 private fun ProductivityDashboard(
@@ -1867,103 +1892,20 @@ private fun ProductivityDashboard(
             IconButton(onClick = onShareProgress, modifier = Modifier.size(34.dp)) {
                 Icon(
                     Icons.Filled.Share,
-                    contentDescription = stringResource(R.string.progress_card_share_progress),
+                    contentDescription = stringResource(R.string.todo_insight_share),
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(18.dp)
                 )
             }
         }
 
-        // ── Streak · longest streak · week score · productive time ──
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatTile(
-                label = stringResource(R.string.todo_stats_streak_label),
-                value = stringResource(R.string.todo_stats_days_value, summary.currentStreak),
-                accent = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.weight(1f)
-            )
-            StatTile(
-                label = stringResource(R.string.todo_stats_longest_label),
-                value = stringResource(R.string.todo_stats_days_value, summary.longestStreak),
-                accent = DONE_GREEN,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatTile(
-                label = stringResource(R.string.todo_stats_week_score_label),
-                value = summary.weekScore?.let { stringResource(R.string.todo_score_value, it) } ?: "—",
-                accent = MaterialTheme.colorScheme.tertiary,
-                modifier = Modifier.weight(1f)
-            )
-            StatTile(
-                label = stringResource(R.string.todo_stats_productive_minutes_label),
-                value = formatMinutesLabel(summary.productiveMinutes),
-                accent = ATTEMPT_AMBER,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        // ── Week-over-week trend + behaviour counts ──
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-            )
-        ) {
-            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Text(
-                    text = when {
-                        summary.scoreDeltaPercent == null ->
-                            stringResource(R.string.todo_stats_delta_flat)
-                        summary.scoreDeltaPercent >= 0 ->
-                            stringResource(R.string.todo_stats_delta_up, summary.scoreDeltaPercent)
-                        else ->
-                            stringResource(R.string.todo_stats_delta_down, -summary.scoreDeltaPercent)
-                    },
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = when {
-                        summary.scoreDeltaPercent == null -> MaterialTheme.colorScheme.onSurfaceVariant
-                        summary.scoreDeltaPercent >= 0 -> DONE_GREEN
-                        else -> MISSED_RED
-                    }
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    BehaviorBadge(
-                        color = DONE_GREEN,
-                        label = stringResource(R.string.todo_dashboard_completed_label),
-                        count = summary.completed
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    BehaviorBadge(
-                        color = ATTEMPT_AMBER,
-                        label = stringResource(R.string.todo_dashboard_attempted_label),
-                        count = summary.attempted
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    BehaviorBadge(
-                        color = MISSED_RED,
-                        label = stringResource(R.string.todo_dashboard_incomplete_label),
-                        count = summary.incomplete
-                    )
-                }
-            }
-        }
-
-        WeeklyProgressSection(
+        WeeklyInsightsCard(
             stats = weekStats,
-            today = today,
-            onDayTap = { onDayTap(it, BarMode.TOTAL) }
-        )
-        WeeklyScoreSection(stats = weekStats, onClick = onScoreClick)
-        InsightsSection(stats = weekStats)
-        StatisticsSection(
-            stats = weekStats,
+            summary = summary,
             items = items,
             today = today,
-            onShareProgress = onShareProgress
+            onDayTap = { onDayTap(it, BarMode.TOTAL) },
+            onScoreClick = onScoreClick
         )
         WeeklyBarGraph(
             stats = weekStats,
@@ -1974,53 +1916,306 @@ private fun ProductivityDashboard(
     }
 }
 
+/**
+ * ONE card holding the week's insights AND statistics (they used to be two
+ * separate sections that repeated each other). Each row is a distinct, useful
+ * number — nothing is displayed twice:
+ *
+ *   completion rate · pending today · weekly progress · volume vs usual ·
+ *   current streak · best streak · best day · most productive time ·
+ *   productive time · this month · week score + trend
+ *
+ * Rows wrap instead of squeezing (the label and the value each get half the
+ * width), so nothing can collapse into one-letter-per-line on a narrow phone.
+ */
 @Composable
-private fun StatTile(
-    label: String,
-    value: String,
-    accent: Color,
-    modifier: Modifier = Modifier
+private fun WeeklyInsightsCard(
+    stats: TodoStats.WeekStats,
+    summary: TodoStats.ProductivitySummary,
+    items: List<TodoItem>,
+    today: LocalDate,
+    onDayTap: (LocalDate) -> Unit,
+    onScoreClick: () -> Unit
 ) {
+    val locale = LocalConfiguration.current.locales[0]
+    val month = remember(items, today) { TodoStats.monthStats(items, today) }
+    val monthWindow = remember(items, today) {
+        val start = YearMonth.from(today).atDay(1).toEpochDay()
+        val end = YearMonth.from(today).atDay(1).plusMonths(1).toEpochDay()
+        TodoStats.mostProductiveWindow(items, start, end)
+    }
+    val productiveWindow = stats.mostProductiveWindow ?: monthWindow
+    val baseline = stats.breakdown?.baselineCompleted
     Card(
-        modifier = modifier,
+        modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         )
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = stringResource(R.string.todo_insights_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
             )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = accent
+            Spacer(Modifier.height(8.dp))
+            if (stats.due <= 0) {
+                // Nothing to measure: a short prompt instead of a wall of
+                // zeroes and dashes.
+                Text(
+                    text = stringResource(R.string.todo_insights_empty),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                return@Column
+            }
+
+            // ── Mon..Sun strip + completion bar (the weekly progress) ──
+            WeeklyProgressSection(stats = stats, today = today, onDayTap = onDayTap)
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider()
+
+            InsightRow(
+                label = stringResource(R.string.todo_insight_completion_rate),
+                value = stringResource(
+                    R.string.todo_insight_completion_value,
+                    stats.percent,
+                    stats.completed,
+                    stats.due
+                ),
+                valueColor = MaterialTheme.colorScheme.primary
             )
+            if (stats.remainingToday > 0) {
+                InsightRow(
+                    label = stringResource(R.string.todo_insight_pending_label),
+                    value = stringResource(
+                        R.string.todo_insight_pending_value,
+                        stats.remainingToday
+                    ),
+                    valueColor = ATTEMPT_AMBER
+                )
+            }
+            InsightRow(
+                label = stringResource(R.string.todo_insight_progress_label),
+                value = when {
+                    stats.improvementPoints != null -> stringResource(
+                        R.string.todo_insight_improvement,
+                        (if (stats.improvementPoints > 0) "+" else "") + stats.improvementPoints
+                    )
+                    stats.firstWeek -> stringResource(R.string.todo_insight_first_week)
+                    else -> stringResource(R.string.todo_stats_delta_flat)
+                }
+            )
+            InsightRow(
+                label = stringResource(R.string.todo_insight_volume_label),
+                value = baseline?.let {
+                    stringResource(
+                        R.string.todo_insight_volume_value,
+                        stats.completed,
+                        it.roundToInt()
+                    )
+                } ?: stringResource(R.string.todo_insight_volume_none)
+            )
+            InsightRow(
+                label = stringResource(R.string.todo_stats_streak_label),
+                value = if (stats.streak > 0) {
+                    pluralStringResource(R.plurals.todo_stats_days_value, stats.streak, stats.streak)
+                } else {
+                    stringResource(R.string.todo_insight_streak_none)
+                },
+                valueColor = if (stats.streak > 0) DONE_GREEN else MaterialTheme.colorScheme.onSurface
+            )
+            InsightRow(
+                label = stringResource(R.string.todo_stats_longest_label),
+                value = pluralStringResource(
+                    R.plurals.todo_stats_days_value,
+                    summary.longestStreak,
+                    summary.longestStreak
+                )
+            )
+            stats.bestDay?.let { best ->
+                InsightRow(
+                    label = stringResource(R.string.todo_stats_best_day_label),
+                    value = stringResource(
+                        R.string.todo_stats_best_day,
+                        best.date.dayOfWeek.getDisplayName(TextStyle.FULL, locale),
+                        (best.rate * 100).toInt()
+                    )
+                )
+            }
+            productiveWindow?.let { (start, end) ->
+                InsightRow(
+                    label = stringResource(R.string.todo_stats_productive_label),
+                    value = stringResource(
+                        R.string.todo_stats_productive_time,
+                        TodoCodec.timeLabel(start * 60),
+                        TodoCodec.timeLabel(end * 60)
+                    )
+                )
+            }
+            if (summary.productiveMinutes > 0) {
+                InsightRow(
+                    label = stringResource(R.string.todo_stats_productive_minutes_label),
+                    value = formatMinutesLabel(summary.productiveMinutes)
+                )
+            }
+            if (month.due > 0) {
+                InsightRow(
+                    label = stringResource(R.string.todo_stats_this_month),
+                    value = pluralStringResource(
+                        R.plurals.todo_insight_month_value,
+                        month.due,
+                        month.completed,
+                        month.due,
+                        month.percent
+                    )
+                )
+            }
+
+            // ── Week score + trend (the whole row opens the breakdown) ──
+            Spacer(Modifier.height(4.dp))
+            HorizontalDivider()
+            ScoreSummaryRow(stats = stats, summary = summary, onClick = onScoreClick)
         }
     }
 }
 
+/**
+ * A label/value insight row. The label and the value each take half the width
+ * (and may wrap to a second line), so a long value can never squeeze the label
+ * into a vertical column of letters.
+ */
 @Composable
-private fun BehaviorBadge(color: Color, label: String, count: Int) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(color))
-        Spacer(Modifier.width(4.dp))
+private fun InsightRow(
+    label: String,
+    value: String,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.Top
+    ) {
         Text(
-            text = "$label $count",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = valueColor,
+            textAlign = TextAlign.End,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
         )
     }
 }
 
 /**
- * LeetCode-style productivity heatmap: 13 weeks of daily score intensity with
- * 5 levels. Tapping a cell shows that day's date, completed / attempted
- * counts, productive time and daily score below the grid.
+ * The weekly score + week-over-week trend. Tapping it opens the explainable
+ * breakdown (the card is not clickable when the week has nothing due).
+ */
+@Composable
+private fun ScoreSummaryRow(
+    stats: TodoStats.WeekStats,
+    summary: TodoStats.ProductivitySummary,
+    onClick: () -> Unit
+) {
+    val score = stats.score
+    val delta = summary.scoreDeltaPercent
+    // The score's plain-language band, so a raw number still means something at
+    // a glance (Excellent / Good / Fair / Keep going).
+    val band = score?.let {
+        stringResource(
+            when {
+                it >= 80 -> R.string.todo_score_excellent
+                it >= 60 -> R.string.todo_score_good
+                it >= 40 -> R.string.todo_score_fair
+                else -> R.string.todo_score_low
+            }
+        )
+    }
+    val trendColor = when {
+        delta == null -> MaterialTheme.colorScheme.onSurfaceVariant
+        delta >= 0 -> DONE_GREEN
+        else -> MISSED_RED
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = score != null, onClick = onClick)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.todo_weekly_score),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = when {
+                    delta == null -> stringResource(R.string.todo_stats_delta_flat)
+                    delta >= 0 -> stringResource(R.string.todo_stats_delta_up, delta)
+                    else -> stringResource(R.string.todo_stats_delta_down, -delta)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = trendColor
+            )
+        }
+        if (band != null) {
+            Text(
+                text = band,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            text = score?.let { stringResource(R.string.todo_score_value, it) }
+                ?: stringResource(R.string.todo_score_empty_week),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+            textAlign = TextAlign.End,
+            maxLines = 1
+        )
+        if (score != null) {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = stringResource(R.string.todo_score_tap_hint),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+/**
+ * A single heatmap column: one week (Monday..Sunday) plus the month label that
+ * belongs above it (null when the column continues the previous month).
+ */
+private data class HeatmapColumn(val monday: LocalDate, val monthLabel: String?)
+
+/**
+ * LeetCode/GitHub-style productivity heatmap: one square per day, one COLUMN
+ * per week, running left to right along the timeline with the month named above
+ * the first column of each month — so the weeks read as clear month blocks
+ * instead of one undifferentiated grid.
+ *
+ * It spans the last [HEATMAP_MONTHS] months and scrolls horizontally when it
+ * cannot fit (phones), while staying compact/complete on wide screens. Square
+ * shading follows the day's earned score (5 levels); tapping one shows that
+ * day's completed / attempted counts, productive time and score beneath the
+ * grid. The weekday letters on the left are Monday / Wednesday / Friday, the
+ * same Monday-first convention as the weekly strip and the calendar.
  */
 @Composable
 private fun TodoProductivityHeatmap(
@@ -2028,15 +2223,34 @@ private fun TodoProductivityHeatmap(
     today: LocalDate,
     nowMillis: Long
 ) {
-    val days = remember(today) {
-        val start = today.minusDays(90)
-        val aligned = start.minusDays((start.dayOfWeek.value - 1).toLong())
-        val total = today.toEpochDay() - aligned.toEpochDay() + 1
-        (0 until total).map { aligned.plusDays(it) }
+    val locale = LocalConfiguration.current.locales[0]
+    // Weeks are Monday-aligned and start on a month boundary, so every month
+    // label sits over its own columns.
+    val weeks = remember(today) {
+        val firstOfMonth = today.minusMonths((HEATMAP_MONTHS - 1).toLong()).withDayOfMonth(1)
+        val aligned = firstOfMonth.minusDays((firstOfMonth.dayOfWeek.value - 1).toLong())
+        val count = ((today.toEpochDay() - aligned.toEpochDay()) / 7).toInt() + 1
+        (0 until count).map { index -> aligned.plusDays(index * 7L) }
+    }
+    val columns = remember(weeks, locale) {
+        val fmt = monthShortFormat(locale)
+        var lastMonth: YearMonth? = null
+        weeks.map { monday ->
+            val month = YearMonth.from(monday)
+            val label = if (month != lastMonth) {
+                lastMonth = month
+                fmt.format(monday)
+            } else null
+            HeatmapColumn(monday, label)
+        }
+    }
+    val days = remember(weeks) {
+        weeks.flatMap { monday -> (0..6).map { monday.plusDays(it.toLong()) } }
     }
     val data = remember(items, days, nowMillis) {
         TodoStats.productivityHeatmap(items, days, nowMillis)
     }
+    val byDate = remember(data) { data.associateBy { it.date } }
     var selected by remember { mutableStateOf<TodoStats.DayProductivity?>(null) }
     val levelColors = listOf(
         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f),
@@ -2045,6 +2259,12 @@ private fun TodoProductivityHeatmap(
         DONE_GREEN.copy(alpha = 0.72f),
         DONE_GREEN
     )
+    val cellDescFmt = stringResource(R.string.todo_heatmap_cell_desc)
+    // Horizontal scroll: shared by the month-label row and the week columns so
+    // the labels can never drift away from the squares underneath them.
+    val scroll = rememberScrollState()
+    fun monthGap(column: HeatmapColumn): Dp =
+        if (column.monthLabel != null) HEATMAP_MONTH_GAP else 0.dp
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -2057,18 +2277,111 @@ private fun TodoProductivityHeatmap(
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = stringResource(R.string.todo_heatmap_subtitle),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2
+            )
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                data.chunked(7).forEach { week ->
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        week.forEach { day ->
-                            Box(
-                                modifier = Modifier
-                                    .size(14.dp)
-                                    .clip(RoundedCornerShape(3.dp))
-                                    .background(levelColors[day.level.coerceIn(0, 4)])
-                                    .clickable { selected = day }
-                            )
+            Row(modifier = Modifier.fillMaxWidth()) {
+                // ── Weekday letters (fixed, outside the scroll) ──
+                Column(
+                    modifier = Modifier.padding(top = HEATMAP_LABEL_ROW + HEATMAP_GAP),
+                    verticalArrangement = Arrangement.spacedBy(HEATMAP_GAP)
+                ) {
+                    repeat(7) { row ->
+                        Box(
+                            modifier = Modifier.size(HEATMAP_CELL),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (row % 2 == 0) {
+                                Text(
+                                    text = DAY_LETTERS[row],
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 9.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.width(6.dp))
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(scroll)
+                ) {
+                    // ── Month labels ──
+                    // Absolutely placed above the first column of each month: a
+                    // fixed-width cell would truncate "Sep" to "S…", so the
+                    // labels are offset instead of constrained.
+                    val labelOffsets = remember(columns) {
+                        var x = 0.dp
+                        columns.map { column ->
+                            val start = x + (if (column.monthLabel != null) HEATMAP_MONTH_GAP else 0.dp)
+                            x = start + HEATMAP_CELL + HEATMAP_GAP
+                            start
+                        }
+                    }
+                    Box(Modifier.height(HEATMAP_LABEL_ROW)) {
+                        columns.forEachIndexed { index, column ->
+                            column.monthLabel?.let { label ->
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    modifier = Modifier.offset(x = labelOffsets[index])
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(HEATMAP_GAP))
+                    // ── One column per week, Monday at the top ──
+                    Row(horizontalArrangement = Arrangement.spacedBy(HEATMAP_GAP)) {
+                        columns.forEach { column ->
+                            Column(
+                                modifier = Modifier.padding(start = monthGap(column)),
+                                verticalArrangement = Arrangement.spacedBy(HEATMAP_GAP)
+                            ) {
+                                (0..6).forEach { row ->
+                                    val date = column.monday.plusDays(row.toLong())
+                                    val day = byDate[date]
+                                    val isFuture = date.isAfter(today)
+                                    val desc = day?.let {
+                                        String.format(
+                                            Locale.US,
+                                            cellDescFmt,
+                                            historyDateFormat(locale).format(date),
+                                            it.completed,
+                                            (it.ratio * 100).toInt()
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(HEATMAP_CELL)
+                                            .clip(RoundedCornerShape(3.dp))
+                                            .background(
+                                                // Days still ahead are left
+                                                // empty: a future schedule is
+                                                // info, never progress.
+                                                if (isFuture) Color.Transparent
+                                                else levelColors[day?.level?.coerceIn(0, 4) ?: 0]
+                                            )
+                                            .clickable(enabled = day != null) { selected = day }
+                                            .then(
+                                                if (desc != null) {
+                                                    Modifier.semantics {
+                                                        contentDescription = desc
+                                                    }
+                                                } else Modifier
+                                            )
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -2141,105 +2454,6 @@ private fun formatMinutesLabel(minutes: Int): String {
         h <= 0 -> "${m}m"
         m == 0 -> "${h}h"
         else -> "${h}h ${m}m"
-    }
-}
-
-/** Statistics: this week, this month, best day and the most productive window. */
-@Composable
-private fun StatisticsSection(
-    stats: TodoStats.WeekStats,
-    items: List<TodoItem>,
-    today: LocalDate,
-    onShareProgress: () -> Unit
-) {
-    val month = remember(items, today) { TodoStats.monthStats(items, today) }
-    val monthWindow = remember(items, today) {
-        val start = YearMonth.from(today).atDay(1).toEpochDay()
-        val end = YearMonth.from(today).atDay(1).plusMonths(1).toEpochDay()
-        TodoStats.mostProductiveWindow(items, start, end)
-    }
-    val productiveWindow = stats.mostProductiveWindow ?: monthWindow
-    if (stats.due == 0 && month.due == 0 && stats.bestDay == null && productiveWindow == null) return
-    val locale = LocalConfiguration.current.locales[0]
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = stringResource(R.string.todo_stats_title),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                // "Share Progress": opens the shareable Progress Card generator.
-                IconButton(onClick = onShareProgress, modifier = Modifier.size(34.dp)) {
-                    Icon(
-                        Icons.Filled.Share,
-                        contentDescription = stringResource(R.string.progress_card_share_progress),
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            if (stats.due > 0) {
-                StatRow(
-                    label = stringResource(R.string.todo_stats_this_week),
-                    value = stringResource(
-                        R.string.todo_stats_week, stats.completed, stats.due, stats.percent
-                    )
-                )
-            }
-            if (month.due > 0) {
-                StatRow(
-                    label = stringResource(R.string.todo_stats_this_month),
-                    value = stringResource(
-                        R.string.todo_stats_week, month.completed, month.due, month.percent
-                    )
-                )
-            }
-            stats.bestDay?.let { best ->
-                val dayName = best.date.dayOfWeek.getDisplayName(TextStyle.FULL, locale)
-                StatRow(
-                    label = stringResource(R.string.todo_stats_best_day_label),
-                    value = stringResource(
-                        R.string.todo_stats_best_day, dayName, (best.rate * 100).toInt()
-                    )
-                )
-            }
-            productiveWindow?.let { (start, end) ->
-                StatRow(
-                    label = stringResource(R.string.todo_stats_productive_label),
-                    value = stringResource(
-                        R.string.todo_stats_productive_time,
-                        TodoCodec.timeLabel(start * 60),
-                        TodoCodec.timeLabel(end * 60)
-                    )
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun StatRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold
-        )
     }
 }
 
@@ -2451,20 +2665,27 @@ private fun WeeklyBarGraph(
     }.maxOrNull()?.coerceAtLeast(1) ?: 1
     Column(modifier = Modifier.fillMaxWidth()) {
         Spacer(Modifier.height(16.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = stringResource(
-                    when (mode) {
-                        BarMode.COMPLETED -> R.string.todo_graph_completed
-                        BarMode.ATTEMPTED -> R.string.todo_graph_attempted
-                        BarMode.INCOMPLETE -> R.string.todo_graph_incomplete
-                        BarMode.TOTAL -> R.string.todo_graph_total
-                    }
-                ),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
+        // Title on its OWN line, chips on the next: sharing one Row squeezed the
+        // title to a sliver on phones, so "Completed Todos" wrapped one letter
+        // per line (the layout looked broken). FlowRow lets the chips wrap too.
+        Text(
+            text = stringResource(
+                when (mode) {
+                    BarMode.COMPLETED -> R.string.todo_graph_completed
+                    BarMode.ATTEMPTED -> R.string.todo_graph_attempted
+                    BarMode.INCOMPLETE -> R.string.todo_graph_incomplete
+                    BarMode.TOTAL -> R.string.todo_graph_total
+                }
+            ),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(6.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
             listOf(
                 BarMode.COMPLETED to R.string.todo_filter_completed,
                 BarMode.ATTEMPTED to R.string.todo_filter_attempted,
@@ -2474,8 +2695,7 @@ private fun WeeklyBarGraph(
                 FilterChip(
                     selected = mode == option,
                     onClick = { mode = option },
-                    label = { Text(stringResource(label)) },
-                    modifier = Modifier.padding(start = 4.dp)
+                    label = { Text(stringResource(label), maxLines = 1) }
                 )
             }
         }

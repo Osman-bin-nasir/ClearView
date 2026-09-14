@@ -155,6 +155,17 @@ object AudioDownloads {
         scope.launch {
             active[id] = DownloadStatus.Preparing
             try {
+                // Instagram videos are NOT YouTube streams: NewPipe can't see
+                // them, so the direct media URL is resolved on-device first and
+                // downloaded as-is (its mp4 carries the audio track).
+                val directUrl = if (video.isInstagramVideo) {
+                    resolveInstagramMediaUrl(video)
+                        ?: throw DownloadException(
+                            "Couldn't find this post's media. Check your connection and try again."
+                        )
+                } else {
+                    null
+                }
                 val result = withContext(Dispatchers.IO) {
                     AudioDownloader.download(
                         context = appContext!!,
@@ -171,7 +182,8 @@ object AudioDownloads {
                         // As soon as the server's response headers reveal the
                         // size (before any audio bytes flow) it is surfaced so
                         // show "≈ X MB" on the active download.
-                        onSizeKnown = { size -> if (size > 0L) pendingSizes[id] = size }
+                        onSizeKnown = { size -> if (size > 0L) pendingSizes[id] = size },
+                        directUrl = directUrl
                     )
                 }
                 withContext(Dispatchers.IO) {
@@ -223,6 +235,21 @@ object AudioDownloads {
                 pendingSizes.remove(id)
                 connections.remove(id)
             }
+        }
+    }
+
+    /**
+     * The direct media URL for an Instagram video/reel: the feed's own URL when
+     * it carried one, otherwise the stream resolved on-device from the post's
+     * public embed page (no login, no cookies).
+     */
+    private suspend fun resolveInstagramMediaUrl(video: MediaVideo): String? {
+        video.mediaUrl?.takeIf { it.startsWith("http") }?.let { return it }
+        val shortcode = com.muddassir.clearview.media.data.InstagramStreamResolver
+            .extractShortcode(video.instagramUrl ?: video.videoId)
+        if (shortcode.isBlank()) return null
+        return withContext(Dispatchers.IO) {
+            com.muddassir.clearview.media.data.InstagramStreamResolver.resolveStreamUrl(shortcode)
         }
     }
 

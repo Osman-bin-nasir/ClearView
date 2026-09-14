@@ -54,6 +54,40 @@ data class MediaVideo(
     val mediaUrl: String? = null,
     val instagramUrl: String? = null
 ) {
+
+    // ── Platform / content-type helpers ───────────────────────────────
+    // Instagram items are recognised by their platform tag OR the legacy
+    // `ig_<shortcode>` id prefix (older caches / manually added posts).
+
+    /** True for any Instagram item (Reel, video or image post). */
+    val isInstagram: Boolean
+        get() = platform == MediaPlatform.INSTAGRAM || videoId.startsWith("ig_")
+
+    /**
+     * True for an Instagram item that carries moving pictures — a Reel or a
+     * video post. These play in the native player exactly like a YouTube
+     * video; only image/carousel posts are rendered as stills.
+     */
+    val isInstagramVideo: Boolean
+        get() = isInstagram && (
+            instagramType == InstagramMediaType.REEL ||
+                instagramType == InstagramMediaType.VIDEO ||
+                mediaUrl?.contains(".mp4") == true
+            )
+
+    /** A still Instagram post (photo or carousel) — shown as a square tile. */
+    val isInstagramImage: Boolean
+        get() = isInstagram && !isInstagramVideo
+
+    /**
+     * True when this item belongs in the Shorts row / viewer. Shorts are a
+     * YouTube concept: an Instagram Reel is a normal video here (it gets the
+     * same feed rows, resume and Continue Watching as any long video). Older
+     * caches stored `isShort = true` for Reels, hence the platform guard.
+     */
+    val isShortsEntry: Boolean
+        get() = isShort && !isInstagram
+
     companion object {
         /**
          * Title-only Short signal: the #shorts hashtag that YouTube appends to
