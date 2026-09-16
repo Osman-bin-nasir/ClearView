@@ -22,6 +22,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,9 +31,13 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -77,6 +82,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -119,6 +125,7 @@ import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * In-app video player built on the YouTube IFrame Player API.
@@ -212,7 +219,7 @@ fun VideoPlayerScreen(
     LaunchedEffect(video.videoId, video.thumbnailUrl) {
         val loaded = if (video.thumbnailUrl.isNotBlank()) {
             withContext(Dispatchers.IO) {
-                ThumbnailCache.get(video.thumbnailUrl) != null
+                ThumbnailCache.get(context, video.thumbnailUrl, BACKDROP_WIDTH_PX) != null
             }
         } else {
             false
@@ -234,7 +241,9 @@ fun VideoPlayerScreen(
         }
         withContext(Dispatchers.IO) {
             neighbors.forEach { n ->
-                if (n.thumbnailUrl.isNotBlank()) ThumbnailCache.get(n.thumbnailUrl)
+                if (n.thumbnailUrl.isNotBlank()) {
+                    ThumbnailCache.get(context, n.thumbnailUrl, BACKDROP_WIDTH_PX)
+                }
             }
         }
     }
@@ -409,6 +418,25 @@ fun VideoPlayerScreen(
         command = cmd
         commandToken++
     }
+
+    // ── Shared transport state (the seek bar BELOW the action row) ──────
+    // Both platforms drive the SAME bar through their own REAL player:
+    //  - YouTube: the IFrame API reports its position every second while the
+    //    video moves (onTimeline) and a coarse position for watch-progress
+    //    persistence (onProgress); the bar sends play/pause/±10 s/seek straight
+    //    back through the bridge.
+    //  - Instagram: the native MediaPlayer is polled every 400 ms and accepts
+    //    the same play/pause/±10 s/seek commands, so its bar is equally real.
+    // Nothing here is a decorative control: every action maps to a supported
+    // player call, and the times shown are the player's own values.
+    var isPlaying by remember(video.videoId) { mutableStateOf(false) }
+    var isMediaBuffering by remember(video.videoId) { mutableStateOf(true) }
+    var transportPosition by remember(video.videoId) { mutableDoubleStateOf(0.0) }
+    var transportDuration by remember(video.videoId) { mutableDoubleStateOf(0.0) }
+    // The media's OWN aspect ratio (w/h) once the player reports its size — 0
+    // until then. Instagram Reels are not all 9:16 (4:5 and 1:1 are common), so
+    // the video box follows the real ratio instead of a hardcoded frame.
+    var mediaAspect by remember(video.videoId) { mutableFloatStateOf(0f) }
     // Muted state: starts from the PERSISTED preference (default true) and is
     // remembered across videos, so muting/unmuting one Short carries to every
     // Short you swipe to. The JS bridge reports the player's real state and
@@ -490,34 +518,24 @@ fun VideoPlayerScreen(
         // Vertical fullscreen (Shorts style) fills the whole portrait screen;
         // landscape is naturally full screen; otherwise a 16:9 box at the top.
         val isInstagram = video.isInstagram
-        // Portrait Instagram gets an ADAPTIVE box that matches the media's own
-        // orientation (9:16 for Reels / videos, 1:1 for image posts) instead of
-        // the fixed 16:9 frame that squeezed them, capped so the control panel
-        // below always stays reachable.
-        val instagramPortraitSize = instagramPortraitBoxSize(video)
-        // Fullscreen toggle shared by the top-right button and the Instagram
-        // controls overlay: portrait toggles the vertical viewer, landscape
-        // rotates back to portrait (playback never restarts).
-        val onFullscreenClick: () -> Unit = {
-            if (isLandscape) {
-                if (fullscreenVertical) onToggleFullscreen()
-                activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            } else {
-                onToggleFullscreen()
-            }
-        }
+        // Portrait Instagram gets an ADAPTIVE, full-width box that matches the
+        // media's OWN aspect ratio (reported by the native player the moment it
+        // is prepared) instead of a hardcoded 16:9 or 9:16 frame — Reels come
+        // in 9:16, 4:5 and 1:1, and none of them may be stretched or cropped.
+        val instagramPortraitSize = instagramPortraitBox(video, mediaAspect)
         Box(
             modifier = when {
                 isLandscape || fullscreenVertical -> Modifier.fillMaxSize()
                 isInstagram -> instagramPortraitSize
                 else -> Modifier.fillMaxWidth().aspectRatio(16f / 9f)
-            }
+            },
+            // The media is letterboxed INSIDE this box at its own aspect ratio
+            // (see InstagramPlayer's SurfaceView), so the box itself is black.
+            contentAlignment = Alignment.Center
         ) {
             if (isInstagram) {
                 InstagramPlayer(
                     video = video,
-                    isLandscape = isLandscape,
-                    fullscreenVertical = fullscreenVertical,
                     muted = isMuted,
                     playbackRate = playbackRate,
                     resumeFromSeconds = resumeFromSeconds,
@@ -525,12 +543,15 @@ fun VideoPlayerScreen(
                     seekToSeconds = seekToSeconds,
                     commandToken = commandToken,
                     command = command,
-                    onToggleFullscreen = onFullscreenClick,
                     onProgress = { currentSeconds, durationSeconds ->
                         // Persist real playback progress so Instagram cards get
                         // a progress bar / Watched badge and Continue Watching
-                        // resumes from the exact position.
+                        // resumes from the exact position. The same report feeds
+                        // the app-side transport bar (this player is polled
+                        // every 400 ms, which is plenty for a draggable bar).
                         if (durationSeconds > 0) {
+                            transportPosition = currentSeconds
+                            transportDuration = durationSeconds
                             val now = System.currentTimeMillis()
                             val fraction = (currentSeconds / durationSeconds)
                                 .toFloat().coerceIn(0f, 1f)
@@ -545,17 +566,19 @@ fun VideoPlayerScreen(
                             }
                         }
                     },
-                    onPlayerState = { _, ended ->
+                    onPlayerState = { playing, ended ->
+                        isPlaying = playing && !ended
                         if (ended) {
                             progressStore.set(video.videoId, 1f)
                             progressRevision++
                         }
                     },
-                    onMutedChange = { m ->
-                        isMuted = m
-                        playerPrefs.edit().putBoolean(KEY_MUTED, m).apply()
+                    onBuffering = { buffering -> isMediaBuffering = buffering },
+                    onVideoSize = { width, height ->
+                        if (width > 0 && height > 0) {
+                            mediaAspect = width.toFloat() / height.toFloat()
+                        }
                     },
-                    onRateChange = setPlaybackRate,
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -587,6 +610,10 @@ fun VideoPlayerScreen(
                             sourceStarted = true
                         }
                         playerState = s
+                        // Transport bar: the real state of the real player.
+                        isPlaying = s == YtState.PLAYING
+                        isMediaBuffering = s == YtState.UNSTARTED ||
+                            s == YtState.BUFFERING || s == YtState.CUED
                         // Video finished: the whole thing counts as watched. Live
                         // broadcasts can report ENDED when the user simply leaves
                         // the player — a live stream has no finite duration to
@@ -643,6 +670,10 @@ fun VideoPlayerScreen(
                         // would render a fake progress bar and could pin the video
                         // as watched. Once the stream ends and becomes a VOD it is
                         // re-parsed as a normal video and tracked normally.
+                        if (durationSeconds > 0) {
+                            transportDuration = durationSeconds
+                            transportPosition = currentSeconds
+                        }
                         if (!isLiveNow && durationSeconds > 0) {
                             // While a resume seek is still landing, early reports
                             // can read ~0 and would overwrite the saved position.
@@ -675,9 +706,17 @@ fun VideoPlayerScreen(
                             }
                         }
                     },
+                    onTimeline = { currentSeconds, durationSeconds ->
+                        // 1 s-resolution position for the seek bar (the 5 s
+                        // channel above stays responsible for persistence).
+                        transportPosition = currentSeconds
+                        transportDuration = durationSeconds
+                    },
                     onPlayerError = { code ->
                         // Log ONCE per error code (the bridge dedups repeats) with the
                         // video id, then update the UI state once.
+                        isPlaying = false
+                        isMediaBuffering = false
                         Log.w(TAG, "YouTube player error code = $code videoId = ${video.videoId}")
                         timedOut = false
                         errorCode = code
@@ -987,7 +1026,32 @@ fun VideoPlayerScreen(
                     progressStore.set(video.videoId, 1f)
                     progressRevision++
                     Toast.makeText(context, "Marked as watched", Toast.LENGTH_SHORT).show()
-                }
+                },
+                transport = TransportState(
+                    positionSeconds = transportPosition,
+                    durationSeconds = transportDuration,
+                    isPlaying = isPlaying,
+                    isBuffering = isMediaBuffering,
+                    isMuted = isMuted,
+                    canSeek = transportDuration > 0.0 && !isLiveNow,
+                    // A live broadcast is not scrubbable, and a still Instagram
+                    // post has no playback at all — no bar for either.
+                    show = !isLiveNow && !video.isInstagramImage
+                ),
+                onTogglePlay = { sendCommand(if (isPlaying) "pause" else "play") },
+                onSeekBack10 = { sendCommand("back10") },
+                onSeekForward10 = { sendCommand("fwd10") },
+                onSeek = { target -> requestSeek(target) },
+                onToggleMute = {
+                    val target = !isMuted
+                    isMuted = target
+                    playerPrefs.edit().putBoolean(KEY_MUTED, target).apply()
+                    sendCommand(if (target) "mute" else "unmute")
+                },
+                // Instagram's details area scrolls (its portrait video can be
+                // tall); YouTube keeps the existing fixed layout.
+                modifier = if (isInstagram) Modifier.weight(1f) else Modifier,
+                scrollable = isInstagram
             )
         }
     }
@@ -1198,16 +1262,32 @@ private fun PlayerControlPanel(
     onHide: () -> Unit,
     /** ⋮ menu → Remove (manually added). */
     onRemoveManual: () -> Unit,
-    onMarkWatched: () -> Unit
+    onMarkWatched: () -> Unit,
+    /** The app-side transport bar (time, seek, play/pause, ±10 s, mute). */
+    transport: TransportState,
+    onTogglePlay: () -> Unit,
+    onSeekBack10: () -> Unit,
+    onSeekForward10: () -> Unit,
+    onSeek: (Double) -> Unit,
+    onToggleMute: () -> Unit,
+    modifier: Modifier = Modifier,
+    /**
+     * Instagram only: the details area takes the leftover height and scrolls,
+     * so a tall portrait video can never push the actions or the transport bar
+     * off-screen (and nothing is ever clipped or overlapped).
+     */
+    scrollable: Boolean = false
 ) {
     val context = LocalContext.current
     var showMoreMenu by remember { mutableStateOf(false) }
     // Custom playback speed (0.25×–5×, 0.05 steps) — opened from the speed menu.
     var showCustomSpeedDialog by remember { mutableStateOf(false) }
     var customSpeed by remember { mutableStateOf(playbackRate) }
+    val scrollState = rememberScrollState()
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .then(if (scrollable) Modifier.verticalScroll(scrollState) else Modifier)
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))
             .padding(horizontal = 16.dp)
             .padding(bottom = 16.dp)
@@ -1434,6 +1514,23 @@ private fun PlayerControlPanel(
                 label = "Playlist",
                 onClick = onAddToPlaylist,
                 modifier = Modifier.weight(1f)
+            )
+        }
+
+        // ── Transport controls, directly BELOW the action icons (never over
+        // the video). Shown whenever there is real playback to control: a
+        // YouTube video, or an Instagram video that is still loading (the bar
+        // shows the buffering spinner) or playing. Hidden for live broadcasts
+        // (no scrubbable timeline) and still image posts (no playback).
+        if (transport.show) {
+            Spacer(Modifier.height(10.dp))
+            VideoTransportBar(
+                state = transport,
+                onTogglePlay = onTogglePlay,
+                onSeekBack10 = onSeekBack10,
+                onSeekForward10 = onSeekForward10,
+                onSeek = onSeek,
+                onToggleMute = onToggleMute
             )
         }
 
@@ -1784,6 +1881,140 @@ private fun ShortsControlBar(
     }
 }
 
+/**
+ * The transport bar's state, always built from the REAL player (see the
+ * per-platform state block in [VideoPlayerScreen]).
+ *
+ * [canSeek] is false while no finite duration is known — a live broadcast has
+ * no scrubbable timeline, so the bar simply doesn't pretend to have one.
+ */
+private data class TransportState(
+    val positionSeconds: Double,
+    val durationSeconds: Double,
+    val isPlaying: Boolean,
+    val isBuffering: Boolean,
+    val isMuted: Boolean,
+    val canSeek: Boolean,
+    /** False for a still post / live broadcast (nothing to scrub). */
+    val show: Boolean
+)
+
+/**
+ * The app's own playback controls, placed BELOW the action icons (⋮ / Share /
+ * Speed / Playlist) so they never cover the video:
+ *
+ *    0:32 ──────────●─────── 3:45
+ *         ◀10s    ▶/❚❚   10s▶   🔇
+ *
+ * Every control maps to a supported call on the running player — the YouTube
+ * IFrame API (`playVideo` / `pauseVideo` / `seekBy` / `seekToSeconds`) or the
+ * native MediaPlayer used for Instagram (start / pause / seekTo). The position
+ * and duration shown are the players' own reports; nothing is simulated, and
+ * the slider seeks for real when released.
+ */
+@Composable
+private fun VideoTransportBar(
+    state: TransportState,
+    onTogglePlay: () -> Unit,
+    onSeekBack10: () -> Unit,
+    onSeekForward10: () -> Unit,
+    onSeek: (Double) -> Unit,
+    onToggleMute: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // While the user drags, the slider follows the finger instead of the
+    // player's periodic position reports; the seek is committed on release.
+    var dragTo by remember { mutableStateOf<Float?>(null) }
+    val max = if (state.canSeek) state.durationSeconds.toFloat() else 0f
+    val position = dragTo
+        ?: state.positionSeconds.toFloat().coerceIn(0f, if (max > 0f) max else 0f)
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = formatPosition((dragTo ?: position).toLong()),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // A minimum rather than a fixed width: "1:25:46" must never be
+                // clipped, and the slider absorbs the difference.
+                modifier = Modifier.widthIn(min = 48.dp),
+                maxLines = 1,
+                softWrap = false,
+                textAlign = TextAlign.Start
+            )
+            Slider(
+                value = position,
+                onValueChange = { dragTo = it },
+                onValueChangeFinished = {
+                    dragTo?.let { onSeek(it.toDouble()) }
+                    dragTo = null
+                },
+                valueRange = 0f..(if (max > 0f) max else 1f),
+                enabled = state.canSeek,
+                modifier = Modifier.weight(1f).padding(horizontal = 4.dp)
+            )
+            Text(
+                text = if (max > 0f) formatPosition(max.toLong()) else "--:--",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.widthIn(min = 48.dp),
+                maxLines = 1,
+                softWrap = false,
+                textAlign = TextAlign.End
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TransportIconButton(
+                icon = Icons.Filled.Replay10,
+                label = "Back 10 seconds",
+                enabled = true,
+                onClick = onSeekBack10
+            )
+            // Play / pause — or a buffering spinner in the same slot, so the
+            // state is obvious without an extra row of chrome.
+            if (state.isBuffering) {
+                Box(
+                    modifier = Modifier.size(48.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                }
+            } else {
+                TransportIconButton(
+                    icon = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    label = if (state.isPlaying) "Pause" else "Play",
+                    enabled = true,
+                    onClick = onTogglePlay,
+                    emphasized = true
+                )
+            }
+            TransportIconButton(
+                icon = Icons.Filled.Forward10,
+                label = "Forward 10 seconds",
+                enabled = true,
+                onClick = onSeekForward10
+            )
+            TransportIconButton(
+                icon = if (state.isMuted) Icons.AutoMirrored.Filled.VolumeOff
+                else Icons.AutoMirrored.Filled.VolumeUp,
+                label = if (state.isMuted) "Unmute" else "Mute",
+                enabled = true,
+                onClick = onToggleMute
+            )
+        }
+    }
+}
+
 @Composable
 private fun TransportIconButton(
     icon: ImageVector,
@@ -1872,131 +2103,30 @@ internal fun shareUrlFor(video: MediaVideo): String {
 }
 
 /**
- * The portrait box size for an Instagram item: the media's own aspect ratio
- * (9:16 Reels / videos, 1:1 posts), scaled to fit the screen width and capped
- * at ~62% of the screen height so the control panel below stays reachable.
+ * The portrait box for an Instagram item: ALWAYS the full available width —
+ * an Instagram video must never sit in a narrow letterbox — at the media's own
+ * aspect ratio once the player has reported it (Reels are not all 9:16; 4:5
+ * and 1:1 are just as common), falling back to the post type's ratio until
+ * then.
+ *
+ * The box height follows that ratio (so a square post is full-width AND
+ * square), capped at [MAX_PORTRAIT_VIDEO_FRACTION] of the screen so the action
+ * row + transport bar below always keep room — and the media is letterboxed
+ * INSIDE the box (never stretched, never cropped), with the details area
+ * scrolling, so no layout can be broken by an extreme ratio.
  */
 @Composable
-private fun instagramPortraitBoxSize(video: MediaVideo): Modifier {
+private fun instagramPortraitBox(video: MediaVideo, mediaAspect: Float): Modifier {
     val configuration = LocalConfiguration.current
     val screenWidth = configuration.screenWidthDp.dp
     val screenHeight = configuration.screenHeightDp.dp
-    val ratio = when (video.instagramType) {
+    val ratio = mediaAspect.takeIf { it > 0.05f } ?: when (video.instagramType) {
         InstagramMediaType.REEL, InstagramMediaType.VIDEO -> 9f / 16f
         else -> 1f
     }
-    val maxHeight = screenHeight * 0.62f
-    val height = minOf(screenWidth / ratio, maxHeight)
-    val width = height * ratio
-    return Modifier.width(width).height(height)
-}
-
-/**
- * Native controls overlay for the Instagram player: play/pause, a seek bar
- * with current position + duration, a mute toggle, a playback-speed menu and a
- * fullscreen toggle — rendered over the native player so Instagram videos get
- * the same first-class controls as YouTube ones.
- */
-@Composable
-private fun InstagramControls(
-    isPlaying: Boolean,
-    isMuted: Boolean,
-    positionSeconds: Double,
-    durationSeconds: Double,
-    playbackRate: Double,
-    isFullscreen: Boolean,
-    onTogglePlay: () -> Unit,
-    onSeek: (Double) -> Unit,
-    onToggleMute: () -> Unit,
-    onToggleFullscreen: () -> Unit,
-    onSpeedSelect: (Double) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var showSpeedMenu by remember { mutableStateOf(false) }
-    val canSeek = durationSeconds > 0.0
-    val maxValue = if (canSeek) durationSeconds.toFloat() else 1f
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = Color.Black.copy(alpha = 0.55f)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 4.dp)
-        ) {
-            IconButton(onClick = onTogglePlay) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = Color.White
-                )
-            }
-            Text(
-                text = formatPosition(positionSeconds.toLong()),
-                color = Color.White,
-                style = MaterialTheme.typography.labelSmall
-            )
-            Slider(
-                value = if (canSeek) {
-                    positionSeconds.toFloat().coerceIn(0f, maxValue)
-                } else {
-                    0f
-                },
-                onValueChange = { onSeek(it.toDouble()) },
-                valueRange = 0f..maxValue,
-                enabled = canSeek,
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
-            )
-            Text(
-                text = formatPosition(durationSeconds.toLong()),
-                color = Color.White,
-                style = MaterialTheme.typography.labelSmall
-            )
-            IconButton(onClick = onToggleMute) {
-                Icon(
-                    imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff
-                    else Icons.AutoMirrored.Filled.VolumeUp,
-                    contentDescription = if (isMuted) "Unmute" else "Mute",
-                    tint = Color.White
-                )
-            }
-            // Always-visible speed badge; tap to change the preset.
-            Box {
-                TextButton(onClick = { showSpeedMenu = true }) {
-                    Text(
-                        text = formatRate(playbackRate),
-                        color = Color.White,
-                        fontWeight = FontWeight.SemiBold,
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
-                DropdownMenu(
-                    expanded = showSpeedMenu,
-                    onDismissRequest = { showSpeedMenu = false }
-                ) {
-                    SPEED_OPTIONS.forEach { rate ->
-                        DropdownMenuItem(
-                            text = { Text(formatRate(rate)) },
-                            trailingIcon = if (rate == playbackRate) {
-                                { Icon(Icons.Filled.Check, contentDescription = null) }
-                            } else null,
-                            onClick = {
-                                showSpeedMenu = false
-                                onSpeedSelect(rate)
-                            }
-                        )
-                    }
-                }
-            }
-            IconButton(onClick = onToggleFullscreen) {
-                Icon(
-                    imageVector = if (isFullscreen) Icons.Filled.FullscreenExit
-                    else Icons.Filled.Fullscreen,
-                    contentDescription = "Fullscreen",
-                    tint = Color.White
-                )
-            }
-        }
-    }
+    val natural = screenWidth / ratio
+    val height = minOf(natural, screenHeight * MAX_PORTRAIT_VIDEO_FRACTION)
+    return Modifier.fillMaxWidth().height(height)
 }
 
 /** SharedPreferences holding the user's persisted playback rate. */
@@ -2005,6 +2135,30 @@ private const val KEY_PLAYBACK_RATE = "playback_rate"
 private const val KEY_MUTED = "muted"
 
 private const val TAG = "VideoPlayerScreen"
+
+/**
+ * End-to-end budget for resolving an Instagram reel's stream (HTTP attempt +
+ * the WebView embed render). After this the player shows a real error card with
+ * Retry — the UI can never sit on "Loading…" indefinitely.
+ */
+private const val RESOLVE_TIMEOUT_MS = 25_000L
+
+/** How long a stream may stay un-prepared before it is treated as failed. */
+private const val PREPARE_TIMEOUT_MS = 20_000L
+
+/**
+ * Decode width for the player's blurred backdrop / poster. Big enough to look
+ * sharp behind the blur, far smaller than the source image.
+ */
+private const val BACKDROP_WIDTH_PX = 720
+
+/**
+ * Ceiling for a portrait Instagram video box, as a fraction of the screen
+ * height. High enough that a full-width 9:16 Reel keeps ~88% of the available
+ * width (instead of the narrow letterbox it used to sit in) while the action
+ * row and transport bar below it always retain scrollable room.
+ */
+private const val MAX_PORTRAIT_VIDEO_FRACTION = 0.72f
 
 /** If no player event arrives within this window, surface an error card. */
 private const val LOAD_TIMEOUT_MS = 25_000L
@@ -2088,8 +2242,6 @@ private fun errorMessageRes(code: Int): Int = when (code) {
 @Composable
 private fun InstagramPlayer(
     video: MediaVideo,
-    isLandscape: Boolean,
-    fullscreenVertical: Boolean,
     muted: Boolean,
     playbackRate: Double,
     resumeFromSeconds: Double,
@@ -2097,11 +2249,12 @@ private fun InstagramPlayer(
     seekToSeconds: Double,
     commandToken: Int,
     command: String,
-    onToggleFullscreen: () -> Unit,
     onProgress: (Double, Double) -> Unit,
     onPlayerState: (Boolean, Boolean) -> Unit,
-    onMutedChange: (Boolean) -> Unit,
-    onRateChange: (Double) -> Unit,
+    /** True while the media is resolving or preparing (transport bar spinner). */
+    onBuffering: (Boolean) -> Unit,
+    /** The prepared media's real pixel size (drives the box aspect ratio). */
+    onVideoSize: (Int, Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -2114,35 +2267,59 @@ private fun InstagramPlayer(
     }
 
     // ── Stream resolution ─────────────────────────────────────────
-    // The post's own media URL when the feed already carried one (the RSS and
-    // backend providers do); otherwise the direct .mp4 is resolved on-device
-    // from Instagram's public embed page — no login, no cookies.
+    // The post's own media URL when the feed already carried a REAL video URL
+    // (the WebProfile provider does), otherwise the direct .mp4 is resolved
+    // on-device — no login, no cookies.
+    //
+    // The resolver first tries Meta's embed page over plain HTTP, and when that
+    // yields nothing (the norm: the page is client-rendered now) it RENDERS the
+    // same public embed in a hidden WebView and reads the real <video> src. A
+    // feed "URL" that is not actually a video (an HTML permalink such as
+    // instagram.com/p/<code>/media?size=l lands in the media slot from some RSS
+    // bridges) is rejected up front — handing it to MediaPlayer could only ever
+    // fail.
     //
     // Playback itself is ALWAYS native (MediaPlayer below, never a WebView):
-    // the embed page played audio with a BLACK picture on device and its own
-    // controls were out of reach from the app. A MediaPlayer always renders.
+    // the embed played audio with a BLACK picture on device and its own controls
+    // were out of reach from the app. A MediaPlayer always renders.
     var streamUrl by remember(video.videoId) {
-        mutableStateOf(video.mediaUrl?.takeIf { it.startsWith("http") })
+        mutableStateOf(
+            video.mediaUrl?.takeIf {
+                com.muddassir.clearview.media.data.InstagramStreamResolver.isPlayableVideoUrl(it)
+            }
+        )
     }
+    // The post's own poster from the embed render (used as the loading still).
+    var posterUrl by remember(video.videoId) { mutableStateOf<String?>(null) }
     var resolvingStream by remember(video.videoId) { mutableStateOf(false) }
     var streamFailed by remember(video.videoId) { mutableStateOf(false) }
     var resolveToken by remember(video.videoId) { mutableIntStateOf(0) }
     var playAttempt by remember(video.videoId) { mutableIntStateOf(0) }
 
-    LaunchedEffect(video.videoId, resolveToken) {
+    LaunchedEffect(video.videoId, streamUrl, resolveToken) {
         if (!isVideo || streamUrl != null) return@LaunchedEffect
         // Nothing to resolve from — the post carries no id we can look up.
         if (shortcode.isBlank()) {
             streamFailed = true
+            onBuffering(false)
             return@LaunchedEffect
         }
         resolvingStream = true
         streamFailed = false
-        val resolved = withContext(Dispatchers.IO) {
-            com.muddassir.clearview.media.data.InstagramStreamResolver.resolveStreamUrl(shortcode)
+        onBuffering(true)
+        // Bounded end-to-end: the HTTP attempt has its own timeouts and the
+        // WebView render has its own 12 s budget; this is the outer guarantee
+        // that the UI can never sit in "Loading…" forever.
+        val resolved = withTimeoutOrNull(RESOLVE_TIMEOUT_MS) {
+            com.muddassir.clearview.media.data.InstagramStreamResolver
+                .resolvePlayableStream(context, shortcode)
         }
-        streamUrl = resolved?.takeIf { it.isNotBlank() }
+        resolved?.let {
+            posterUrl = it.posterUrl
+            streamUrl = it.videoUrl
+        }
         streamFailed = streamUrl == null
+        if (streamFailed) onBuffering(false)
         resolvingStream = false
     }
 
@@ -2158,6 +2335,11 @@ private fun InstagramPlayer(
     var player by remember(video.videoId) { mutableStateOf<MediaPlayer?>(null) }
     var surface by remember(video.videoId) { mutableStateOf<Surface?>(null) }
     var prepared by remember(video.videoId) { mutableStateOf(false) }
+    // True while the stream is resolving/preparing — reported to the transport
+    // bar so it shows a spinner instead of a fake play button.
+    LaunchedEffect(resolvingStream, streamUrl) {
+        onBuffering(resolvingStream || (!streamUrl.isNullOrBlank() && !prepared))
+    }
     var started by remember(video.videoId) { mutableStateOf(false) }
     var resumeApplied by remember(video.videoId) { mutableStateOf(false) }
     var reportedPlaying by remember(video.videoId) { mutableStateOf(false) }
@@ -2187,26 +2369,47 @@ private fun InstagramPlayer(
                     .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
                     .build()
             )
-            // The CDN URL is signed; the Referer keeps the request looking
-            // like the embed page it was resolved from.
-            mp.setDataSource(
-                context,
-                Uri.parse(url),
-                mapOf("Referer" to "https://www.instagram.com/")
-            )
+            // A remote CDN URL goes through the String overload. The
+            // Context+Uri overload only handles content:// providers, so using
+            // it for an https URL just logs "Error setting data source via
+            // ContentResolver" before falling back — and the resolved CDN URL
+            // is fully signed, so it needs no extra headers (verified against
+            // Meta's CDN: HTTP 206, video/mp4, no Referer required).
+            if (url.startsWith("content://")) {
+                mp.setDataSource(context, Uri.parse(url))
+            } else {
+                mp.setDataSource(url)
+            }
             mp.setOnPreparedListener { p ->
                 prepared = true
+                onBuffering(false)
                 p.setVolume(if (mutedState) 0f else 1f, if (mutedState) 0f else 1f)
                 val durationMs = runCatching { p.duration }.getOrDefault(0)
                 if (durationMs > 0) durationSeconds = durationMs / 1000.0
                 runCatching {
                     videoWidth = p.videoWidth
                     videoHeight = p.videoHeight
+                    // The media's OWN aspect ratio drives the player box, so a
+                    // 4:5 or square Reel is not letterboxed into a 9:16 frame.
+                    if (p.videoWidth > 0 && p.videoHeight > 0) {
+                        onVideoSize(p.videoWidth, p.videoHeight)
+                    }
                 }
             }
             mp.setOnVideoSizeChangedListener { _, width, height ->
                 videoWidth = width
                 videoHeight = height
+                if (width > 0 && height > 0) onVideoSize(width, height)
+            }
+            // Rebuffering mid-playback (a stalled CDN connection) is a REAL
+            // state the bar should show.
+            mp.setOnBufferingUpdateListener { _, percent ->
+                onBuffering(percent < 100 && !runCatching { mp.isPlaying }.getOrDefault(false))
+            }
+            mp.setOnInfoListener { _, what, _ ->
+                if (what == MediaPlayer.MEDIA_INFO_BUFFERING_START) onBuffering(true)
+                if (what == MediaPlayer.MEDIA_INFO_BUFFERING_END) onBuffering(false)
+                false
             }
             mp.setOnCompletionListener {
                 reportedPlaying = false
@@ -2217,6 +2420,7 @@ private fun InstagramPlayer(
                 reportedPlaying = false
                 isPlaying = false
                 playbackFailed = true
+                onBuffering(false)
                 stateCallback(false, false)
                 true
             }
@@ -2231,11 +2435,27 @@ private fun InstagramPlayer(
             started = false
             runCatching { mp.release() }
         }
+    }    // Preparation watchdog: a MediaPlayer that neither prepares nor errors
+    // (a CDN that accepts the connection and then stalls) would otherwise leave
+    // the player on "Loading…" forever. Bounded, and it hands the user a real
+    // error card with Retry instead.
+    LaunchedEffect(video.videoId, streamUrl, playAttempt) {
+        if (streamUrl.isNullOrBlank()) return@LaunchedEffect
+        val deadline = System.currentTimeMillis() + PREPARE_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            delay(500)
+            if (prepared || playbackFailed) return@LaunchedEffect
+        }
+        if (!prepared && !playbackFailed) {
+            playbackFailed = true
+            onBuffering(false)
+            stateCallback(false, false)
+        }
     }
 
-    // Start once BOTH the player is prepared and the view has a surface — in
-    // whichever order the two arrive.
-    LaunchedEffect(video.videoId, prepared, surface) {
+        // Start once BOTH the player is prepared and the view has a surface — in
+        // whichever order the two arrive.
+        LaunchedEffect(video.videoId, prepared, surface) {
         val mp = player ?: return@LaunchedEffect
         val s = surface ?: return@LaunchedEffect
         if (!prepared) return@LaunchedEffect
@@ -2340,17 +2560,15 @@ private fun InstagramPlayer(
         runCatching { mp.setVolume(if (muted) 0f else 1f, if (muted) 0f else 1f) }
     }
 
-    // Reopen the stream after a playback failure: a URL the feed itself
-    // provided is retried as-is; a URL RESOLVED from the embed page (which can
-    // go stale, they are time-signed) is resolved again from scratch.
+    // Reopen the stream after a failure. Always re-resolve from scratch: a
+    // resolved URL is time-signed and can go stale, and a feed-provided URL
+    // that already failed once must not be retried unchanged (that is what
+    // made Retry a dead end).
     val retryInstagramPlayback: () -> Unit = {
         playbackFailed = false
-        if (video.mediaUrl?.startsWith("http") == true) {
-            playAttempt++
-        } else {
-            streamUrl = null
-            resolveToken++
-        }
+        streamFailed = false
+        streamUrl = null
+        resolveToken++
     }
 
 
@@ -2412,11 +2630,13 @@ private fun InstagramPlayer(
                     modifier = Modifier.fillMaxSize().background(Color.Black),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (video.thumbnailUrl.isNotBlank()) {
+                    val still = posterUrl ?: video.thumbnailUrl.takeIf { it.isNotBlank() }
+                    if (still != null) {
                         RemoteImage(
-                            url = video.thumbnailUrl,
+                            url = still,
                             modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
+                            contentScale = ContentScale.Crop,
+                            showLoadingSpinner = false
                         )
                         Box(
                             Modifier
@@ -2437,11 +2657,20 @@ private fun InstagramPlayer(
                                 style = MaterialTheme.typography.bodySmall
                             )
                         } else if (streamFailed) {
-                            Text(
-                                text = "Couldn't load this Reel",
-                                color = Color.White,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            ) {
+                                Text(
+                                    text = "Couldn't load this Reel. It may be private " +
+                                        "or removed.",
+                                    modifier = Modifier.padding(20.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
                             TextButton(onClick = { retryInstagramPlayback() }) {
                                 Text(stringResource(R.string.media_player_retry))
                             }
@@ -2483,45 +2712,34 @@ private fun InstagramPlayer(
         }
     }
 
-        // ── Native controls overlay (video only, once a stream is loaded) ──
-        if (isVideo && streamUrl != null) {
-            InstagramControls(
-                isPlaying = isPlaying,
-                isMuted = mutedState,
-                positionSeconds = positionSeconds,
-                durationSeconds = durationSeconds,
-                playbackRate = playbackRate,
-                isFullscreen = isLandscape || fullscreenVertical,
-                onTogglePlay = {
-                    val mp = player
-                    if (mp != null) {
-                        val play = !isPlaying
-                        runCatching { if (play) mp.start() else mp.pause() }
-                        isPlaying = play
-                        reportedPlaying = play
-                        stateCallback(play, false)
-                    }
-                },
-                onSeek = { target ->
-                    player?.let { mp ->
-                        runCatching { mp.seekTo(secondsToMillisInt(target)) }
-                    }
-                    positionSeconds = target
-                },
-                onToggleMute = {
-                    val target = !mutedState
-                    mutedState = target
-                    onMutedChange(target)
-                    player?.let { mp ->
-                        runCatching { mp.setVolume(if (target) 0f else 1f, if (target) 0f else 1f) }
-                    }
-                },
-                onToggleFullscreen = onToggleFullscreen,
-                // Persist + update the badge; the LaunchedEffect above applies
-                // the new rate to the live player.
-                onSpeedSelect = { onRateChange(it) },
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
+        // ── Preparing: the poster + a spinner, so the slot is never a dead
+        // black rectangle while the stream opens. The transport bar below the
+        // action icons shows the same buffering state.
+        if (isVideo && streamUrl != null && !prepared && !playbackFailed) {
+            Box(
+                modifier = Modifier.matchParentSize().background(Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                val still = posterUrl ?: video.thumbnailUrl.takeIf { it.isNotBlank() }
+                if (still != null) {
+                    RemoteImage(
+                        url = still,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                        showLoadingSpinner = false
+                    )
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.45f))
+                    )
+                }
+                CircularProgressIndicator(
+                    color = Color.White,
+                    modifier = Modifier.size(30.dp),
+                    strokeWidth = 3.dp
+                )
+            }
         }
 
         // ── Playback failed: reopen the stream (re-resolve + retry) ────
@@ -2535,7 +2753,7 @@ private fun InstagramPlayer(
                     color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
                     Text(
-                        text = "Couldn't play this Reel.",
+                        text = "Couldn't play this Reel. Tap Retry to resolve it again.",
                         modifier = Modifier.padding(20.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

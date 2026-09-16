@@ -22,6 +22,35 @@ object InstagramStreamResolver {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
     /**
+     * A resolved, directly playable stream plus the post's poster (when known).
+     * [videoUrl] is a plain progressive `.mp4` on Meta's CDN — exactly what the
+     * native MediaPlayer needs.
+     */
+    data class ResolvedStream(val videoUrl: String, val posterUrl: String?)
+
+    /**
+     * The COMPLETE, self-healing resolution path used by the player:
+     *
+     *  1. the fast server-rendered HTTP scrape below (still the cheapest when
+     *     Meta happens to serve a static embed page), and
+     *  2. when that yields nothing — which is now the norm, because the embed
+     *     page is client-rendered — [InstagramEmbedResolver], which actually
+     *     RENDERS the public embed in a WebView and reads the real `<video>`
+     *     src from the resulting DOM.
+     *
+     * Returns null only when the post genuinely exposes no playable video
+     * (private, deleted, or a still image), so the caller can show a real error
+     * state instead of waiting forever.
+     */
+    suspend fun resolvePlayableStream(context: android.content.Context, shortcodeOrUrl: String): ResolvedStream? {
+        val httpUrl = resolveStreamUrl(shortcodeOrUrl)
+        if (httpUrl != null) return ResolvedStream(httpUrl, null)
+        val embedded = InstagramEmbedResolver.resolve(context, shortcodeOrUrl)
+            ?: return null
+        return ResolvedStream(embedded.videoUrl, embedded.posterUrl)
+    }
+
+    /**
      * Resolves the direct .mp4 media stream URL for [shortcodeOrUrl].
      * Returns null if the post is an image post or resolution fails.
      *
@@ -135,5 +164,21 @@ object InstagramStreamResolver {
             .replace("&amp;", "&")
             .replace("\\\"", "\"")
             .trim()
+    }
+
+    /**
+     * True when [url] is plausibly a PLAYABLE video stream rather than a page
+     * or an image. The feed providers occasionally hand out an HTML permalink
+     * (e.g. `instagram.com/p/<code>/media?size=l`) in the media slot; handing
+     * that to MediaPlayer can only ever fail, so it is rejected here and the
+     * real stream is resolved instead.
+     */
+    fun isPlayableVideoUrl(url: String?): Boolean {
+        if (url.isNullOrBlank() || !url.startsWith("http")) return false
+        val lower = url.lowercase()
+        if (lower.contains("instagram.com/p/") || lower.contains("instagram.com/reel/")) return false
+        return lower.contains(".mp4") || lower.contains(".m4v") ||
+            lower.contains(".webm") || lower.contains(".mov") ||
+            lower.contains("/video/") || lower.contains("video_url")
     }
 }

@@ -98,6 +98,14 @@ fun YoutubePlayer(
      */
     onProgress: (currentSeconds: Double, durationSeconds: Double) -> Unit = { _, _ -> },
     /**
+     * FINE-GRAINED transport timeline (seconds) for the app's own seek bar:
+     * fired once per second while the video is PLAYING or BUFFERING, plus one
+     * final report on pause / end. Distinct from [onProgress], which exists for
+     * watch-progress persistence and only fires every 5 s. Live streams never
+     * report here (no finite duration → nothing to scrub).
+     */
+    onTimeline: (currentSeconds: Double, durationSeconds: Double) -> Unit = { _, _ -> },
+    /**
      * The player detected a LIVE broadcast (the IFrame API reports an infinite
      * duration). Reliable runtime live detection — independent of the feed's
      * isLive thumbnail hint, which RSS rarely provides.
@@ -152,6 +160,7 @@ fun YoutubePlayer(
     val currentOnAutoplayBlocked by rememberUpdatedState(onAutoplayBlocked)
     val currentOnReady by rememberUpdatedState(onReady)
     val currentOnProgress by rememberUpdatedState(onProgress)
+    val currentOnTimeline by rememberUpdatedState(onTimeline)
     val currentOnLive by rememberUpdatedState(onLive)
     val currentOnMuteState by rememberUpdatedState(onMuteState)
 
@@ -177,6 +186,7 @@ fun YoutubePlayer(
             autoplayBlockedCallback = { mainHandler.post { currentOnAutoplayBlocked() } },
             readyCallback = { mainHandler.post { currentOnReady() } },
             progressCallback = { c, d -> mainHandler.post { currentOnProgress(c, d) } },
+            timelineCallback = { c, d -> mainHandler.post { currentOnTimeline(c, d) } },
             liveCallback = { mainHandler.post { currentOnLive() } },
             muteStateCallback = { muted -> mainHandler.post { currentOnMuteState(muted) } }
         )
@@ -769,6 +779,7 @@ private class YtBridge(
     private val autoplayBlockedCallback: () -> Unit,
     private val readyCallback: () -> Unit,
     private val progressCallback: (Double, Double) -> Unit,
+    private val timelineCallback: (Double, Double) -> Unit,
     private val liveCallback: () -> Unit,
     private val muteStateCallback: (Boolean) -> Unit
 ) {
@@ -815,6 +826,17 @@ private class YtBridge(
         if (durationSeconds <= 0) return
         Log.d(TAG, "IFRAME_PROGRESS ${Math.round(currentSeconds)}s/${Math.round(durationSeconds)}s")
         progressCallback(currentSeconds, durationSeconds)
+    }
+
+    /**
+     * Fine-grained position for the app's own seek bar (once per second while
+     * playing/buffering, plus the final position on pause/end). Never fired for
+     * a live stream.
+     */
+    @JavascriptInterface
+    fun onTimeline(currentSeconds: Double, durationSeconds: Double) {
+        if (durationSeconds <= 0) return
+        timelineCallback(currentSeconds, durationSeconds)
     }
 
     /**

@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,8 +15,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -204,26 +208,29 @@ fun LiveTab(
             }
         }
 
-        // ── Channel selector: its OWN row, above the player, so the chips can
-        // never overlap the player's mute/CC/settings icons. Horizontally
-        // scrollable when the chips don't fit (small screens / large fonts).
-        // In landscape it collapses to zero height (fullscreen video) but the
-        // row STAYS composed at slot #1, keeping the player's slot #2 stable
-        // across rotation — the WebView is never recreated.
-        LazyRow(
+        // ── Channel selector: its OWN row, above the player, so the tabs can
+        // never overlap the player's mute/CC/settings icons. The two locations
+        // share the full width equally (Makkah | Madinah) so the selected one is
+        // unmistakable at a glance — no cramped, uneven pills and nothing to
+        // scroll horizontally on a narrow phone. In landscape the row collapses
+        // to zero height (fullscreen video) but STAYS composed at slot #1,
+        // keeping the player's slot #2 stable across rotation — the WebView is
+        // never recreated.
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(if (isLandscape) 0.dp else 58.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                .height(if (isLandscape) 0.dp else 64.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            items(streams, key = { it.id }) { s ->
-                HaramaynChannelPill(
+            streams.forEach { s ->
+                HaramaynLocationTab(
                     label = s.title,
                     name = s.name,
                     selected = s.id == selectedId,
-                    onClick = { if (s.id != selectedId) selectedId = s.id }
+                    onClick = { if (s.id != selectedId) selectedId = s.id },
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
@@ -350,49 +357,72 @@ fun LiveTab(
 }
 
 /**
- * One Haramayn channel selector: a clean pill with the channel's display name
- * over its broadcast name, and a live dot on the selected one. Deliberately
- * plain text (no emojis) and built from the app's own pill language instead of
- * Material's [androidx.compose.material3.FilterChip], whose selected chrome
- * read as an unrelated control inside the immersive live player.
+ * One Makkah / Madinah tab: an equal-width, full-height segment showing the
+ * location over its broadcast name, with a clearly different active state
+ * (filled primary surface, a pulsing "live" dot, error-tinted inactive state)
+ * so the current channel is obvious without reading. Built from the app's own
+ * pill language rather than Material's [androidx.compose.material3.FilterChip],
+ * whose selected chrome read as an unrelated control inside the immersive live
+ * player. The 48 dp minimum height keeps both tabs comfortably tappable, and
+ * `weight(1f)` guarantees identical widths at every screen size.
  */
 @Composable
-private fun HaramaynChannelPill(
+private fun HaramaynLocationTab(
     label: String,
     name: String,
     selected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
+    // A gentle blink on the selected tab's live dot — the same "this is on air"
+    // cue as the live caption below, and the strongest active-state signal at a
+    // glance. Idle tabs stay perfectly still.
+    val transition = rememberInfiniteTransition(label = "live-dot")
+    val dotAlpha by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "live-dot-alpha"
+    )
     val contentColor = if (selected) {
         MaterialTheme.colorScheme.onPrimary
     } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
+        MaterialTheme.colorScheme.onSurface
     }
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(22.dp),
+        modifier = modifier.heightIn(min = 48.dp),
+        shape = RoundedCornerShape(14.dp),
         color = if (selected) {
             MaterialTheme.colorScheme.primary
         } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
         },
         contentColor = contentColor,
         border = if (selected) null else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.Center
         ) {
             if (selected) {
                 Box(
                     modifier = Modifier
                         .size(8.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.onPrimary)
+                        .background(MaterialTheme.colorScheme.onPrimary.copy(alpha = dotAlpha))
                 )
+                Spacer(Modifier.width(8.dp))
             }
-            Column {
+            Column(
+                horizontalAlignment = if (selected) Alignment.Start else Alignment.CenterHorizontally
+            ) {
                 Text(
                     text = label,
                     style = MaterialTheme.typography.titleSmall,

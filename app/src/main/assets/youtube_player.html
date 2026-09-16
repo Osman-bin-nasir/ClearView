@@ -280,6 +280,35 @@
     if (reportFinal) reportProgress();
   }
 
+  // ── Transport timeline reporting (app-side seek bar) ─────────────
+  // The watch-progress timer above runs every 5 s — far too coarse for a
+  // seek bar the user drags. This SECOND, lightweight channel reports the
+  // position once per second while the video is actually moving (PLAYING or
+  // BUFFERING), plus one final report on pause / end so the bar lands exactly
+  // on the last real position. It is purely additive: the 5 s progress channel
+  // still owns watch-progress persistence. A live stream (non-finite
+  // duration) is never reported here — there is no scrubbable timeline.
+  var timelineTimer = null;
+  function reportTimeline(force) {
+    try {
+      if (!player || typeof player.getCurrentTime !== 'function') return;
+      var d = (typeof player.getDuration === 'function') ? player.getDuration() : 0;
+      var t = player.getCurrentTime();
+      if (!isFinite(d) || d <= 0 || !isFinite(t)) return;
+      var st = (typeof player.getPlayerState === 'function') ? player.getPlayerState() : -1;
+      if (!force && st !== 1 && st !== 3) return; // only while playing / buffering
+      notify2('onTimeline', t, d);
+    } catch (e) {}
+  }
+  function startTimelineTimer() {
+    stopTimelineTimer(false);
+    timelineTimer = setInterval(function () { reportTimeline(false); }, 1000);
+  }
+  function stopTimelineTimer(reportFinal) {
+    if (timelineTimer) { clearInterval(timelineTimer); timelineTimer = null; }
+    if (reportFinal) reportTimeline(true);
+  }
+
   // ── Load the IFrame Player API ──────────────────────────────────
   var tag = document.createElement('script');
   tag.src = "https://www.youtube.com/iframe_api";
@@ -378,6 +407,8 @@
           applyResume(pendingResume);
           // Pin the best quality as soon as the player exists.
           applyMaxQuality();
+          // Start the 1 s transport-timeline channel (app-side seek bar).
+          startTimelineTimer();
           // Apply the attributes from YouTube's official embed snippet to the
           // generated iframe (title, referrerpolicy, allow + web-share).
           try {
@@ -416,12 +447,14 @@
           if (e.data === 2) {
             lastPauseAt = Date.now();
             stopProgressTimer(true); // paused → final position
+            reportTimeline(true);    // land the seek bar exactly where it is
             // A pause means the video is READY (autoplay blocked or user
             // paused) — show it normally instead of the black cover.
             if (isCoverForCurrentVideo()) setCover(false);
           }
           if (e.data === 0) {
             stopProgressTimer(true); // ended → position == duration (100%)
+            reportTimeline(true);    // seek bar reaches the end
             if (isCoverForCurrentVideo()) setCover(false);
           }
           logSizes('STATE=' + e.data);

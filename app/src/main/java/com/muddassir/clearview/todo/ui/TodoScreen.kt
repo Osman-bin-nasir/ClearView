@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -34,17 +36,24 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.TrendingDown
+import androidx.compose.material.icons.automirrored.filled.TrendingFlat
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EventAvailable
+import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -66,6 +75,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -75,7 +86,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
@@ -1623,70 +1639,120 @@ private fun HistoryRow(entry: TodoCodec.HistoryEntry) {
     }
 }
 
-/** Weekly Progress: the Mon..Sun strip (tap a day) + completion bar. */
+/**
+ * The week at a glance: one bar per day (Monday first) whose fill shows how much
+ * of that day's plan was completed, with the weekday and the completed count
+ * underneath and today clearly marked. Tapping a day opens its todos.
+ *
+ * The bars are scaled against the WEEK'S busiest day (never against an
+ * arbitrary maximum), so the shape of the week is readable at a glance; a day
+ * that missed its plan keeps an empty track and a red-tinted count, and future
+ * days are drawn as empty outlines because a schedule is information, never
+ * progress.
+ */
 @Composable
 private fun WeeklyProgressSection(
     stats: TodoStats.WeekStats,
     today: LocalDate,
     onDayTap: (LocalDate) -> Unit
 ) {
+    val maxDue = stats.days.maxOfOrNull { it.due }?.coerceAtLeast(1) ?: 1
+    val trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f)
     Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = stringResource(R.string.todo_weekly_progress),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = stringResource(R.string.todo_weekly_progress),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${stats.percent}%",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
         Spacer(Modifier.height(10.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             stats.days.forEach { day ->
                 val letter = DAY_LETTERS[day.date.dayOfWeek.value - 1]
                 val isToday = day.date == today
-                val completed = day.completed > 0
-                val missed = !isToday && day.due > 0 && day.completed == 0
-                val circleColor = when {
-                    completed -> DONE_GREEN
-                    missed -> MISSED_RED
-                    else -> MaterialTheme.colorScheme.surfaceVariant
+                val isFuture = day.date.isAfter(today)
+                val missed = !isToday && !isFuture && day.due > 0 && day.completed == 0
+                val fraction = if (day.due > 0) {
+                    (day.completed.toFloat() / maxDue).coerceIn(0f, 1f)
+                } else {
+                    0f
                 }
-                val letterColor = if (completed || missed) Color.White
-                else if (isToday) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant
+                val fillColor = if (missed) MISSED_RED else DONE_GREEN
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(9.dp))
                         .clickable { onDayTap(day.date) }
-                        .padding(vertical = 6.dp),
+                        .padding(vertical = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(30.dp)
-                            .clip(CircleShape)
-                            .background(circleColor),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .height(46.dp)
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(
+                                if (isToday) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                else trackColor
+                            ),
+                        contentAlignment = Alignment.BottomCenter
                     ) {
-                        Text(
-                            text = letter,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = letterColor
-                        )
+                        if (fraction > 0f) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height((46.dp * fraction).coerceAtLeast(6.dp))
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(fillColor)
+                            )
+                        } else if (missed) {
+                            // A missed day shows a thin marker so it can never
+                            // read as "nothing was scheduled".
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(MISSED_RED.copy(alpha = 0.7f))
+                            )
+                        }
                     }
-                    Spacer(Modifier.height(3.dp))
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        text = letter,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (isToday) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isToday) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Text(
                         text = day.completed.toString(),
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (day.completed > 0) DONE_GREEN
-                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        fontWeight = FontWeight.SemiBold,
+                        color = when {
+                            day.completed > 0 -> DONE_GREEN
+                            missed -> MISSED_RED
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        }
                     )
                 }
             }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = pluralStringResource(
@@ -1698,12 +1764,6 @@ private fun WeeklyProgressSection(
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.weight(1f)
             )
-            Text(
-                text = "${stats.percent}%",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
         }
         Spacer(Modifier.height(6.dp))
         LinearProgressIndicator(
@@ -1712,6 +1772,7 @@ private fun WeeklyProgressSection(
         )
     }
 }
+
 
 /** \"How your score was calculated\" — every component with its contribution. */
 @Composable
@@ -1917,17 +1978,32 @@ private fun ProductivityDashboard(
 }
 
 /**
- * ONE card holding the week's insights AND statistics (they used to be two
- * separate sections that repeated each other). Each row is a distinct, useful
- * number — nothing is displayed twice:
+ * ONE card holding the week's insights AND statistics — a scannable
+ * productivity dashboard rather than a wall of label/value rows.
  *
- *   completion rate · pending today · weekly progress · volume vs usual ·
- *   current streak · best streak · best day · most productive time ·
- *   productive time · this month · week score + trend
+ * WHAT IT SHOWS (and why each figure earns its place):
+ *  1. A completion RING — the week's completion percentage, the single number
+ *     that answers "how much did I get done?". Inside it sits the raw ratio
+ *     ("34 of 50"), so the percentage is never abstract.
+ *  2. The TREND against last week ("↑ 12% vs last week"), i.e. the
+ *     improving/falling-behind signal — dormant (with an explanation) in the
+ *     first week, where there is nothing honest to compare against.
+ *  3. TODAY's remaining/complete state — the actual current workload, which is
+ *     what the user can still act on right now.
+ *  4. The weekly Mon..Sun bars — the shape of the week at a glance, each day
+ *     tappable for its todos.
+ *  5. Four tiles: completed today, current streak, active days (consistency)
+ *     and volume against the user's OWN recent baseline (throughput).
+ *  6. Secondary facts (longest streak, best day, most productive time, logged
+ *     time, this month) and the explainable weekly score.
  *
- * Rows wrap instead of squeezing (the label and the value each get half the
- * width), so nothing can collapse into one-letter-per-line on a narrow phone.
+ * Deliberately NOT shown: "todos created", cumulative incomplete counts and
+ * other vanity figures that cannot change a decision. Every value comes from
+ * the same [TodoStats.weekStats] / [TodoStats.productivitySummary] call, so no
+ * two numbers on this screen can disagree, and everything is either real data
+ * or explicitly absent ("No history yet").
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WeeklyInsightsCard(
     stats: TodoStats.WeekStats,
@@ -1939,6 +2015,7 @@ private fun WeeklyInsightsCard(
 ) {
     val locale = LocalConfiguration.current.locales[0]
     val month = remember(items, today) { TodoStats.monthStats(items, today) }
+    val todayStats = remember(items, today) { TodoStats.dayStats(items, today) }
     val monthWindow = remember(items, today) {
         val start = YearMonth.from(today).atDay(1).toEpochDay()
         val end = YearMonth.from(today).atDay(1).plusMonths(1).toEpochDay()
@@ -1946,19 +2023,20 @@ private fun WeeklyInsightsCard(
     }
     val productiveWindow = stats.mostProductiveWindow ?: monthWindow
     val baseline = stats.breakdown?.baselineCompleted
+    val wide = LocalConfiguration.current.screenWidthDp >= 600
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         )
     ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Text(
                 text = stringResource(R.string.todo_insights_title),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
             if (stats.due <= 0) {
                 // Nothing to measure: a short prompt instead of a wall of
                 // zeroes and dashes.
@@ -1970,61 +2048,80 @@ private fun WeeklyInsightsCard(
                 return@Column
             }
 
-            // ── Mon..Sun strip + completion bar (the weekly progress) ──
-            WeeklyProgressSection(stats = stats, today = today, onDayTap = onDayTap)
-            Spacer(Modifier.height(10.dp))
-            HorizontalDivider()
+            // ── 1+2+3. Hero: completion ring, trend, what's left today ──
+            InsightHero(stats = stats, summary = summary)
+            Spacer(Modifier.height(16.dp))
 
-            InsightRow(
-                label = stringResource(R.string.todo_insight_completion_rate),
-                value = stringResource(
-                    R.string.todo_insight_completion_value,
-                    stats.percent,
-                    stats.completed,
-                    stats.due
-                ),
-                valueColor = MaterialTheme.colorScheme.primary
-            )
-            if (stats.remainingToday > 0) {
-                InsightRow(
-                    label = stringResource(R.string.todo_insight_pending_label),
+            // ── 4. The week at a glance (tap a day for its todos) ──
+            WeeklyProgressSection(stats = stats, today = today, onDayTap = onDayTap)
+            Spacer(Modifier.height(14.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(12.dp))
+
+            // ── 5. Key figures as evenly sized tiles. Two per row on a phone,
+            // four on a tablet — nothing is squeezed to one letter per line. ──
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                val tileModifier = if (wide) {
+                    Modifier.weight(1f)
+                } else {
+                    Modifier.fillMaxWidth(0.48f)
+                }
+                StatTile(
+                    icon = Icons.Filled.CheckCircle,
                     value = stringResource(
-                        R.string.todo_insight_pending_value,
-                        stats.remainingToday
+                        R.string.todo_card_tile_today_value,
+                        todayStats.completed,
+                        todayStats.due
                     ),
-                    valueColor = ATTEMPT_AMBER
+                    label = stringResource(R.string.todo_card_tile_today_label),
+                    tint = DONE_GREEN,
+                    modifier = tileModifier
+                )
+                StatTile(
+                    icon = Icons.Filled.LocalFireDepartment,
+                    value = if (stats.streak > 0) {
+                        pluralStringResource(R.plurals.todo_stats_days_value, stats.streak, stats.streak)
+                    } else {
+                        stringResource(R.string.todo_card_none)
+                    },
+                    label = stringResource(R.string.todo_stats_streak_label),
+                    tint = if (stats.streak > 0) ATTEMPT_AMBER
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = tileModifier
+                )
+                StatTile(
+                    icon = Icons.Filled.EventAvailable,
+                    value = stringResource(R.string.todo_card_tile_active_days_value, stats.activeDays),
+                    label = stringResource(R.string.todo_card_tile_active_days_label),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = tileModifier
+                )
+                StatTile(
+                    icon = Icons.AutoMirrored.Filled.TrendingUp,
+                    value = baseline?.let {
+                        stringResource(R.string.todo_card_tile_volume_value, stats.completed)
+                    } ?: stringResource(R.string.todo_card_none),
+                    // The comparison is stated in the LABEL so the tile never
+                    // shows a bare number with no context — and a missing
+                    // baseline says so instead of implying a zero.
+                    label = baseline?.let {
+                        stringResource(R.string.todo_card_tile_volume_label, it.roundToInt())
+                    } ?: stringResource(R.string.todo_insight_volume_none),
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = tileModifier
                 )
             }
-            InsightRow(
-                label = stringResource(R.string.todo_insight_progress_label),
-                value = when {
-                    stats.improvementPoints != null -> stringResource(
-                        R.string.todo_insight_improvement,
-                        (if (stats.improvementPoints > 0) "+" else "") + stats.improvementPoints
-                    )
-                    stats.firstWeek -> stringResource(R.string.todo_insight_first_week)
-                    else -> stringResource(R.string.todo_stats_delta_flat)
-                }
-            )
-            InsightRow(
-                label = stringResource(R.string.todo_insight_volume_label),
-                value = baseline?.let {
-                    stringResource(
-                        R.string.todo_insight_volume_value,
-                        stats.completed,
-                        it.roundToInt()
-                    )
-                } ?: stringResource(R.string.todo_insight_volume_none)
-            )
-            InsightRow(
-                label = stringResource(R.string.todo_stats_streak_label),
-                value = if (stats.streak > 0) {
-                    pluralStringResource(R.plurals.todo_stats_days_value, stats.streak, stats.streak)
-                } else {
-                    stringResource(R.string.todo_insight_streak_none)
-                },
-                valueColor = if (stats.streak > 0) DONE_GREEN else MaterialTheme.colorScheme.onSurface
-            )
+
+            Spacer(Modifier.height(14.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(4.dp))
+
+            // ── 6. Secondary facts + the score, each on a cleanly aligned row
+            // (label hard-left, value hard-right, one shared value edge). ──
             InsightRow(
                 label = stringResource(R.string.todo_stats_longest_label),
                 value = pluralStringResource(
@@ -2072,7 +2169,6 @@ private fun WeeklyInsightsCard(
                 )
             }
 
-            // ── Week score + trend (the whole row opens the breakdown) ──
             Spacer(Modifier.height(4.dp))
             HorizontalDivider()
             ScoreSummaryRow(stats = stats, summary = summary, onClick = onScoreClick)
@@ -2081,9 +2177,285 @@ private fun WeeklyInsightsCard(
 }
 
 /**
- * A label/value insight row. The label and the value each take half the width
- * (and may wrap to a second line), so a long value can never squeeze the label
- * into a vertical column of letters.
+ * The card's hero: the week's completion as a ring, the raw ratio inside it,
+ * the week-over-week trend and today's actionable remainder.
+ *
+ * Uses only real values: [TodoStats.WeekStats.rate]/[TodoStats.WeekStats.percent],
+ * [TodoStats.WeekStats.remainingToday] and
+ * [TodoStats.WeekStats.improvementPoints]; the trend is replaced by an
+ * explanation (and by the score trend when history exists but this week's
+ * completion rate has no previous-week counterpart) instead of a fabricated
+ * number.
+ */
+@Composable
+private fun InsightHero(stats: TodoStats.WeekStats, summary: TodoStats.ProductivitySummary) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        ProgressRing(
+            fraction = stats.rate,
+            percentText = "${stats.percent}%",
+            captionText = stringResource(
+                R.string.todo_card_ring_caption,
+                stats.completed,
+                stats.due
+            ),
+            modifier = Modifier.size(94.dp)
+        )
+        Spacer(Modifier.width(18.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.todo_card_week_label),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = stringResource(
+                    R.string.todo_card_completed_of,
+                    stats.completed,
+                    stats.due
+                ),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            // Today's workload — the part that is still actionable.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val allDone = stats.remainingToday == 0
+                Icon(
+                    imageVector = if (allDone) Icons.Filled.CheckCircle
+                    else Icons.Filled.HourglassEmpty,
+                    contentDescription = null,
+                    tint = if (allDone) DONE_GREEN else ATTEMPT_AMBER,
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (allDone) {
+                        stringResource(R.string.todo_card_all_done_today)
+                    } else {
+                        stringResource(R.string.todo_card_left_today, stats.remainingToday)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = if (allDone) DONE_GREEN else MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Spacer(Modifier.height(2.dp))
+            TrendChip(
+                completionDeltaPoints = stats.improvementPoints,
+                scoreDeltaPercent = summary.scoreDeltaPercent,
+                firstWeek = stats.firstWeek
+            )
+        }
+    }
+}
+
+/**
+ * The week-over-week trend: completion-rate points when both weeks have
+ * completions to compare, the score's percentage change as the fallback, and a
+ * plain explanation when there is genuinely nothing to compare yet. Never a
+ * made-up percentage.
+ */
+@Composable
+private fun TrendChip(
+    completionDeltaPoints: Int?,
+    scoreDeltaPercent: Int?,
+    firstWeek: Boolean
+) {
+    val (text, color, icon) = when {
+        completionDeltaPoints != null && completionDeltaPoints > 0 ->
+            Triple(
+                stringResource(R.string.todo_stats_delta_up, completionDeltaPoints),
+                DONE_GREEN,
+                Icons.AutoMirrored.Filled.TrendingUp
+            )
+        completionDeltaPoints != null && completionDeltaPoints < 0 ->
+            Triple(
+                stringResource(R.string.todo_stats_delta_down, -completionDeltaPoints),
+                MISSED_RED,
+                Icons.AutoMirrored.Filled.TrendingDown
+            )
+        completionDeltaPoints != null ->
+            Triple(
+                stringResource(R.string.todo_stats_delta_flat),
+                MaterialTheme.colorScheme.onSurfaceVariant,
+                Icons.AutoMirrored.Filled.TrendingFlat
+            )
+        scoreDeltaPercent != null && scoreDeltaPercent > 0 ->
+            Triple(
+                stringResource(R.string.todo_card_score_trend_up, scoreDeltaPercent),
+                DONE_GREEN,
+                Icons.AutoMirrored.Filled.TrendingUp
+            )
+        scoreDeltaPercent != null && scoreDeltaPercent < 0 ->
+            Triple(
+                stringResource(R.string.todo_card_score_trend_down, -scoreDeltaPercent),
+                MISSED_RED,
+                Icons.AutoMirrored.Filled.TrendingDown
+            )
+        firstWeek ->
+            Triple(
+                stringResource(R.string.todo_card_first_week),
+                MaterialTheme.colorScheme.onSurfaceVariant,
+                Icons.Filled.Timeline
+            )
+        else -> Triple(
+            stringResource(R.string.todo_stats_delta_flat),
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            Icons.AutoMirrored.Filled.TrendingFlat
+        )
+    }
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = color.copy(alpha = 0.14f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = color,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(Modifier.width(5.dp))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = color,
+                maxLines = 2
+            )
+        }
+    }
+}
+
+/**
+ * A circular completion indicator: a full track with the completed fraction
+ * drawn over it, starting at 12 o'clock. The percentage sits in the middle with
+ * the raw ratio beneath it, so the ring is readable without a legend. The arc
+ * animates to its value (a short tween) so a data refresh is visible rather
+ * than an instant jump.
+ */
+@Composable
+private fun ProgressRing(
+    fraction: Float,
+    percentText: String,
+    captionText: String,
+    modifier: Modifier = Modifier
+) {
+    val target = fraction.coerceIn(0f, 1f)
+    val animated by animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(durationMillis = 600),
+        label = "completion-ring"
+    )
+    val trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
+    val progressColor = if (target >= 1f) DONE_GREEN else MaterialTheme.colorScheme.primary
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val stroke = size.minDimension * 0.11f
+            val inset = stroke / 2f
+            val arcSize = Size(size.width - stroke, size.height - stroke)
+            drawArc(
+                color = trackColor,
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                topLeft = Offset(inset, inset),
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+            if (animated > 0f) {
+                drawArc(
+                    color = progressColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f * animated,
+                    useCenter = false,
+                    topLeft = Offset(inset, inset),
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+            }
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = percentText,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = captionText,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * One dashboard figure: a tinted icon + value on the first line, its label
+ * underneath. Fixed layout (never a wrapping label squeezing the value) so a
+ * row of tiles stays aligned at every width.
+ */
+@Composable
+private fun StatTile(
+    icon: ImageVector,
+    value: String,
+    label: String,
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = tint,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/**
+ * A label/value row with GUARANTEED alignment: the label takes the space it
+ * needs and the value is right-aligned against the card's own right edge, so
+ * every value in the card lines up on one vertical axis and the list scans like
+ * a table. (The previous version let both columns flex, which made each value
+ * start at a different x and read as ragged.) The value drops to a second line
+ * before it would ever squeeze the label into one-letter-per-line columns.
  */
 @Composable
 private fun InsightRow(
@@ -2099,9 +2471,9 @@ private fun InsightRow(
             text = label,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f, fill = false)
+            modifier = Modifier.weight(1f)
         )
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(16.dp))
         Text(
             text = value,
             style = MaterialTheme.typography.bodyMedium,
@@ -2109,8 +2481,7 @@ private fun InsightRow(
             color = valueColor,
             textAlign = TextAlign.End,
             maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
+            overflow = TextOverflow.Ellipsis
         )
     }
 }

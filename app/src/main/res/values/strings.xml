@@ -417,6 +417,22 @@
     <!-- Weekly Insights & Statistics (one merged card) -->
     <string name="todo_insights_title">Weekly Insights &amp; Statistics</string>
     <string name="todo_insights_empty">No todos were due this week — add a todo to start building your insights.</string>
+    <!-- Productivity card (redesigned dashboard): hero, tiles, trend -->
+    <string name="todo_card_week_label">This week</string>
+    <string name="todo_card_completed_of">%1$d of %2$d completed</string>
+    <string name="todo_card_ring_caption">of %1$d</string>
+    <string name="todo_card_left_today">%1$d left today</string>
+    <string name="todo_card_all_done_today">All done today</string>
+    <string name="todo_card_none">—</string>
+    <string name="todo_card_first_week">First week — no comparison yet</string>
+    <string name="todo_card_score_trend_up">↑ %1$d%% score vs last week</string>
+    <string name="todo_card_score_trend_down">↓ %1$d%% score vs last week</string>
+    <string name="todo_card_tile_today_value">%1$d / %2$d</string>
+    <string name="todo_card_tile_today_label">Completed today</string>
+    <string name="todo_card_tile_active_days_value">%1$d of 7</string>
+    <string name="todo_card_tile_active_days_label">Active days this week</string>
+    <string name="todo_card_tile_volume_value">%1$d</string>
+    <string name="todo_card_tile_volume_label">Usual %1$d this week</string>
     <string name="todo_insight_completion_rate">Completion rate</string>
     <string name="todo_insight_completion_value">%1$d%% · %2$d of %3$d</string>
     <string name="todo_insight_pending_label">Pending today</string>
