@@ -509,12 +509,36 @@ object TodoCodec {
         return updated to nowCompleted
     }
 
-    /** Marks [id] as attempted on [day] (for ATTEMPTED behavior). */
+    /**
+     * Marks [id] as attempted on [day] (for ATTEMPTED behavior). Idempotent: a
+     * day that is already attempted is left untouched, so repeatedly tapping
+     * "Mark Attempted" cannot pile up duplicate events (which the History and
+     * Attempted counts would each have to de-duplicate).
+     */
     fun attempted(items: List<TodoItem>, id: String, day: LocalDate, at: Long): List<TodoItem> =
         items.map { item ->
             if (item.id != id) item
+            else if (isAttemptedOn(item, day)) item
             else item.copy(
                 events = item.events + TodoEvent.Attempted(at, day.toEpochDay()),
+                updatedAtEpochMillis = at
+            )
+        }
+
+    /**
+     * Clears the ATTEMPTED state of [id] on [day] — the toggle back from
+     * "Attempted" to "Not started". Every Attempted event for that day is
+     * removed (rather than appended to), so the occurrence really returns to
+     * its untouched state and the partial credit it earned disappears from the
+     * score. Completions are untouched.
+     */
+    fun unattempted(items: List<TodoItem>, id: String, day: LocalDate, at: Long): List<TodoItem> =
+        items.map { item ->
+            if (item.id != id) item
+            else item.copy(
+                events = item.events.filterNot {
+                    it is TodoEvent.Attempted && it.epochDay == day.toEpochDay()
+                },
                 updatedAtEpochMillis = at
             )
         }

@@ -14,7 +14,7 @@ import com.muddassir.clearview.media.util.PlaylistPageParser
 import com.muddassir.clearview.media.util.decodeFeedFilter
 import com.muddassir.clearview.media.util.encodeFeedFilter
 import com.muddassir.clearview.media.util.extractYouTubePlaylistId
-import com.muddassir.clearview.media.util.extractYouTubeVideoId
+import com.muddassir.clearview.media.util.parseYouTubeRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -292,10 +292,16 @@ class MediaRepository(context: Context) {
         input: String,
         fallbackChannel: SavedChannel?
     ): ResolveVideoResult = withContext(Dispatchers.IO) {
-        val videoId = extractYouTubeVideoId(input)
+        // ONE parser for every link form YouTube hands out — watch, youtu.be,
+        // /shorts/, /embed/, /live/ (which the old regex set could not read at
+        // all) and a bare id. The parsed KIND is kept: a /shorts/ link really is
+        // a Short, so it opens as a vertical Short instead of being filed as a
+        // long video (which is what the old hardcoded `isShort = false` did).
+        val ref = parseYouTubeRef(input)
             ?: return@withContext ResolveVideoResult.Error(
                 "That doesn't look like a YouTube video URL."
             )
+        val videoId = ref.videoId
         // Already in this channel's cache? Reuse the RSS metadata.
         fallbackChannel?.let { channel ->
             getCachedVideos(channel.channelId)
@@ -322,7 +328,7 @@ class MediaRepository(context: Context) {
                 publishedAtEpochMillis = 0L, // unknown date — never pretend it's new
                 thumbnailUrl = meta.thumbnailUrl,
                 viewCount = 0L,
-                isShort = false,
+                isShort = ref.isShort,
                 // Same live-thumbnail signal as the RSS parser.
                 isLive = meta.thumbnailUrl.contains("_live.", ignoreCase = true),
                 // oEmbed omits duration, so resolve it from the watch page too
@@ -812,13 +818,27 @@ class MediaRepository(context: Context) {
                 val igType = igTypeStr?.let { runCatching { InstagramMediaType.valueOf(it) }.getOrNull() }
                 val mediaUrl = o.optString("mediaUrl", "").takeIf { it.isNotBlank() }
                 val instagramUrl = o.optString("instagramUrl", "").takeIf { it.isNotBlank() }
+                val videoId = o.getString("videoId")
+                // Instagram thumbnails are RE-DERIVED on every read: a
+                // feed-supplied CDN URL dies with its signature (403), so a
+                // cached post would keep showing a blank tile forever. The
+                // helper swaps it for the stable, self-renewing endpoint (and
+                // fills in a poster when the stored one is empty).
+                val isInstagram = platform == MediaPlatform.INSTAGRAM || videoId.startsWith("ig_")
                 MediaVideo(
-                    videoId = o.getString("videoId"),
+                    videoId = videoId,
                     title = o.optString("title", ""),
                     channelId = o.optString("channelId", ""),
                     channelName = o.optString("channelName", ""),
                     publishedAtEpochMillis = o.optLong("publishedAt", 0L),
-                    thumbnailUrl = o.optString("thumbnailUrl", ""),
+                    thumbnailUrl = if (isInstagram) {
+                        InstagramEmbedPayload.thumbnailFor(
+                            videoId.removePrefix("ig_"),
+                            o.optString("thumbnailUrl", "")
+                        )
+                    } else {
+                        o.optString("thumbnailUrl", "")
+                    },
                     viewCount = o.optLong("viewCount", 0L),
                     isShort = o.optBoolean("isShort", false),
                     isLive = o.optBoolean("isLive", false),

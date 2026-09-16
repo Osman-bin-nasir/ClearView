@@ -129,6 +129,16 @@ fun YoutubePlayer(
     /** Seconds to seek to when [seekToken] changes (0 = restart). */
     seekToSeconds: Double = 0.0,
     /**
+     * Bump to move the playhead WITHOUT touching the play state — the app's own
+     * timeline bar (drag to seek). Distinct from [seekToken], which is
+     * "resume playback at this position" (Continue Watching / Watch Again):
+     * scrubbing a PAUSED video must leave it paused, exactly like YouTube's own
+     * bar does.
+     */
+    scrubToken: Int = 0,
+    /** Seconds to move the playhead to when [scrubToken] changes. */
+    scrubToSeconds: Double = 0.0,
+    /**
      * Transport commands for the Shorts viewer: bump [commandToken] to send
      * [command] ("play" / "pause" / "mute" / "unmute") to the page.
      */
@@ -521,6 +531,16 @@ fun YoutubePlayer(
                     Log.w(TAG, "SEEK_FAILED: ${e.message}")
                 }
             }
+            // Timeline scrubbing (the app's own transport bar): move the
+            // playhead only — a paused video stays paused.
+            if (controller.pageReady && controller.appliedScrubToken != scrubToken) {
+                controller.appliedScrubToken = scrubToken
+                try {
+                    webView.evaluateJavascript("scrubTo($scrubToSeconds)", null)
+                } catch (e: Exception) {
+                    Log.w(TAG, "SCRUB_FAILED: ${e.message}")
+                }
+            }
             // Shorts transport commands (play / pause / mute). While the page
             // is still loading the command is remembered and flushed by
             // applySource once the page finishes — a pause/mute tapped during
@@ -689,6 +709,8 @@ private class PlayerController {
     @Volatile var maxQuality: Boolean = false
     /** Last seekToken honored (drives the Continue-Watching re-seek). */
     var appliedSeekToken: Int = 0
+    /** Last scrubToken honored (drives the transport bar's timeline). */
+    var appliedScrubToken: Int = 0
     /** Last commandToken honored (Shorts transport commands). */
     var appliedCommandToken: Int = 0
     /** Command queued while the page was still loading (flushed on page ready). */

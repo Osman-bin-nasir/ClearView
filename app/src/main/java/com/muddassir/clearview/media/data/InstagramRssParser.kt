@@ -118,10 +118,14 @@ object InstagramRssParser {
                 else -> ""
             }
 
+            // A post carrying MORE THAN ONE image is a carousel — a POST, even
+            // when one of its slides is a video clip. Only a Reel / a plain
+            // video belongs in the Videos section; everything else is a post
+            // (the carousel check therefore comes BEFORE the video signal).
             val igType = when {
                 originalUrl.contains("/reel/", ignoreCase = true) -> InstagramMediaType.REEL
-                isVideoContent -> InstagramMediaType.VIDEO
                 descImageUrls.size > 1 -> InstagramMediaType.CAROUSEL
+                isVideoContent -> InstagramMediaType.VIDEO
                 else -> InstagramMediaType.IMAGE
             }
 
@@ -136,7 +140,11 @@ object InstagramRssParser {
                     channelId = channelId,
                     channelName = feedTitle.ifBlank { username },
                     publishedAtEpochMillis = publishedAt,
-                    thumbnailUrl = thumbnailUrl,
+                    // Never posterless: the bridge's `…/media?size=l` value IS
+                    // the post's image (it redirects to Meta's CDN), and when
+                    // a source supplies no thumbnail at all the same endpoint
+                    // is derived from the shortcode.
+                    thumbnailUrl = InstagramEmbedPayload.thumbnailFor(shortcode, thumbnailUrl),
                     viewCount = 0L,
                     isShort = isVideoContent,
                     isLive = false,
@@ -193,10 +201,12 @@ object InstagramRssParser {
             val directMediaUrl = extractVideoFromHtml(content)
 
             val thumbnailUrl = descImageUrls.firstOrNull() ?: ""
+            // Multi-image = carousel (a POST) before the video signal: a post
+            // with a video slide is still a post, not a video row item.
             val igType = when {
                 originalUrl.contains("/reel/", ignoreCase = true) -> InstagramMediaType.REEL
-                isVideoContent -> InstagramMediaType.VIDEO
                 descImageUrls.size > 1 -> InstagramMediaType.CAROUSEL
+                isVideoContent -> InstagramMediaType.VIDEO
                 else -> InstagramMediaType.IMAGE
             }
 
@@ -211,7 +221,10 @@ object InstagramRssParser {
                     channelId = channelId,
                     channelName = feedTitle.ifBlank { username },
                     publishedAtEpochMillis = publishedAt,
-                    thumbnailUrl = thumbnailUrl,
+                    // Reels carry their poster as `…/media?size=l` (the post's
+                    // real image) and some sources omit a thumbnail entirely;
+                    // both are handled here so a Reel is never posterless.
+                    thumbnailUrl = InstagramEmbedPayload.thumbnailFor(shortcode, thumbnailUrl),
                     viewCount = 0L,
                     isShort = isVideoContent,
                     isLive = false,

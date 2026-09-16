@@ -67,13 +67,22 @@ data class MediaVideo(
      * True for an Instagram item that carries moving pictures — a Reel or a
      * video post. These play in the native player exactly like a YouTube
      * video; only image/carousel posts are rendered as stills.
+     *
+     * The TYPE decides, and it decides both ways: a post that merely CONTAINS
+     * a video clip (a carousel with one video slide) is still a post, because
+     * the Videos section is for Reels and videos only. Only when the source
+     * gave no type at all (older caches, manually added posts) is a progressive
+     * video URL accepted as evidence.
      */
     val isInstagramVideo: Boolean
-        get() = isInstagram && (
-            instagramType == InstagramMediaType.REEL ||
-                instagramType == InstagramMediaType.VIDEO ||
-                mediaUrl?.contains(".mp4") == true
-            )
+        get() {
+            if (!isInstagram) return false
+            return when (instagramType) {
+                InstagramMediaType.REEL, InstagramMediaType.VIDEO -> true
+                InstagramMediaType.IMAGE, InstagramMediaType.CAROUSEL -> false
+                null -> mediaUrl?.contains(".mp4") == true
+            }
+        }
 
     /** A still Instagram post (photo or carousel) — shown as a square tile. */
     val isInstagramImage: Boolean

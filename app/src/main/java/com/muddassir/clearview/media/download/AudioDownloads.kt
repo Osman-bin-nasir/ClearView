@@ -51,6 +51,19 @@ object AudioDownloads {
     /** All finished downloads, newest first (drives lists and filters). */
     val items = mutableStateOf<List<DownloadItem>>(emptyList())
 
+    /**
+     * [items] indexed by video id, kept in step with [items] by [refresh].
+     *
+     * Every feed card asks "is this video downloaded?" (and, in the player,
+     * "which download is this?" — including its file path) during composition,
+     * so those lookups must not scan the whole download list: that made the
+     * Media tab O(visible cards × downloads) on every recomposition — and the
+     * feed recomposes on every watch-progress revision and download tick. A
+     * snapshot map keeps the lookups O(1) AND observable (a download appearing
+     * or disappearing still recomposes exactly the cards that care).
+     */
+    private val itemsById = mutableStateMapOf<String, DownloadItem>()
+
     /** In-flight / failed downloads keyed by video id. */
     val active = mutableStateMapOf<String, DownloadStatus>()
 
@@ -102,11 +115,15 @@ object AudioDownloads {
         scope.launch {
             val list = withContext(Dispatchers.IO) { s.loadItems() }
             items.value = list
+            // Rebuild the index in one pass. clear() + putAll() happen in the
+            // same frame, so no recomposition ever observes the intermediate
+            // empty state.
+            itemsById.clear()
+            itemsById.putAll(list.associateBy { it.videoId })
         }
     }
 
-    fun isDownloaded(videoId: String): Boolean =
-        items.value.any { it.videoId == videoId }
+    fun isDownloaded(videoId: String): Boolean = itemsById.containsKey(videoId)
 
     /**
      * Resolves the on-disk file of a finished download (`filesDir/downloads`).
@@ -117,8 +134,7 @@ object AudioDownloads {
     fun audioFile(context: Context, item: DownloadItem): File =
         store?.audioFile(item) ?: AudioDownloadStore(context).audioFile(item)
 
-    fun itemFor(videoId: String): DownloadItem? =
-        items.value.firstOrNull { it.videoId == videoId }
+    fun itemFor(videoId: String): DownloadItem? = itemsById[videoId]
 
     fun statusFor(videoId: String): DownloadStatus? = active[videoId]
 

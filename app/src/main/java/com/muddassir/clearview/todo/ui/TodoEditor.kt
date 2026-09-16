@@ -13,6 +13,8 @@ import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -111,7 +113,7 @@ private val DATE_FORMAT = DateTimeFormatter.ofPattern("MMM d")
  * across it (a chosen count, or your own specific times). Only the name is
  * required.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TodoEditorDialog(
     initial: TodoItem?,
@@ -401,7 +403,13 @@ fun TodoEditorDialog(
                     Spacer(Modifier.height(20.dp))
                     SectionTitle("Task Variety")
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Wrapping rows: the chips size themselves and fall to the
+                    // next line instead of being squeezed/overflowing on a
+                    // narrow screen (a fixed Row clips its last chip).
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         TodoBehavior.entries.forEach { b ->
                             FilterChip(
                                 selected = behavior == b,
@@ -436,7 +444,10 @@ fun TodoEditorDialog(
                             fontWeight = FontWeight.SemiBold
                         )
                         Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             listOf(
                                 15 to "15m",
                                 30 to "30m",
@@ -458,7 +469,14 @@ fun TodoEditorDialog(
                     SectionTitle(stringResource(R.string.todo_date))
                     Spacer(Modifier.height(6.dp))
                     if (type == TodoType.TEMPORARY) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Today / Tomorrow / This week / Custom no longer share
+                        // one line: on most phones the four chips did not fit,
+                        // so "Custom" was squeezed against the edge. FlowRow
+                        // drops it onto its own line when it needs to.
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             listOf(
                                 PeriodChoice.TODAY to R.string.todo_today,
                                 PeriodChoice.TOMORROW to R.string.todo_tomorrow,
@@ -474,7 +492,10 @@ fun TodoEditorDialog(
                         }
                         if (period == PeriodChoice.CUSTOM) {
                             Spacer(Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 OutlinedButton(onClick = { dateTarget = DateTarget.START }) {
                                     Text(stringResource(R.string.todo_date_range_start, DATE_FORMAT.format(startDate)))
                                 }
@@ -527,7 +548,10 @@ fun TodoEditorDialog(
                     Spacer(Modifier.height(20.dp))
                     SectionTitle(stringResource(R.string.todo_time))
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         FilterChip(
                             selected = timeChoice == TimeChoice.NONE,
                             onClick = { timeChoice = TimeChoice.NONE },
@@ -601,7 +625,10 @@ fun TodoEditorDialog(
                         }
                         TimeChoice.RANGE -> {
                             Spacer(Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 OutlinedButton(onClick = { timeTarget = TimeTarget.RangeStart }) {
                                     Text(stringResource(R.string.todo_time_from, TodoCodec.timeLabel(timeStartMinutes)))
                                 }
@@ -726,7 +753,10 @@ fun TodoEditorDialog(
                     Spacer(Modifier.height(20.dp))
                     SectionTitle(stringResource(R.string.todo_priority))
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         listOf(
                             TodoPriority.LOW to R.string.todo_priority_low,
                             TodoPriority.NORMAL to R.string.todo_priority_normal,
@@ -854,31 +884,35 @@ private fun SectionTitle(text: String) {
 }
 
 /** How the automatic reminder fires: Off / Notification / real system Alarm. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ReminderStyleRow(
     style: ReminderStyle,
     onSelect: (ReminderStyle) -> Unit,
     onRequestNotifications: () -> Unit
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = stringResource(R.string.todo_reminder_style),
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.weight(1f)
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(
-                ReminderStyle.OFF to R.string.todo_reminder_style_off,
-                ReminderStyle.NOTIFICATION to R.string.todo_reminder_style_notification,
-                ReminderStyle.ALARM to R.string.todo_reminder_style_alarm
-            ).forEach { (option, label) ->
-                FilterChip(
-                    selected = style == option,
-                    onClick = { onSelect(option) },
-                    label = { Text(stringResource(label)) }
-                )
-            }
+    // The title sits ABOVE the chips (not beside them): sharing one line left
+    // the three chips too little width and clipped the last one on a phone.
+    Text(
+        text = stringResource(R.string.todo_reminder_style),
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.SemiBold
+    )
+    Spacer(Modifier.height(6.dp))
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        listOf(
+            ReminderStyle.OFF to R.string.todo_reminder_style_off,
+            ReminderStyle.NOTIFICATION to R.string.todo_reminder_style_notification,
+            ReminderStyle.ALARM to R.string.todo_reminder_style_alarm
+        ).forEach { (option, label) ->
+            FilterChip(
+                selected = style == option,
+                onClick = { onSelect(option) },
+                label = { Text(stringResource(label)) }
+            )
         }
     }
     Spacer(Modifier.height(3.dp))

@@ -42,6 +42,7 @@ import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -150,8 +151,20 @@ private fun monthNameFormat(locale: Locale): DateTimeFormatter =
 private fun monthShortFormat(locale: Locale): DateTimeFormatter =
     DateTimeFormatter.ofPattern("MMM", locale)
 
-/** How many months the productivity heatmap covers (including the current one). */
-private const val HEATMAP_MONTHS = 6
+/**
+ * Month + 2-digit year ("Jan 26") — used for the columns that open a new year
+ * (and the very first column), so a full-year grid can never show two identical
+ * "Aug" labels with no way to tell which year each belongs to.
+ */
+private fun monthYearFormat(locale: Locale): DateTimeFormatter =
+    DateTimeFormatter.ofPattern("MMM yy", locale)
+
+/**
+ * How many months the productivity heatmap covers (including the current one).
+ * A full ROLLING YEAR (≈53 week columns, horizontally scrollable), not the
+ * last few months: consistency is only visible across a year.
+ */
+private const val HEATMAP_MONTHS = 12
 
 /** Heatmap geometry: one square per day, one column per week. */
 private val HEATMAP_CELL = 15.dp
@@ -655,6 +668,7 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
                                         onDelete = { pendingDelete = todo },
                                         onSnooze = { snoozing = todo },
                                         onAttempt = { store.markAttempted(todo.id, today) },
+                                        onUnattempt = { store.markUnattempted(todo.id, today) },
                                         onAddTime = { mins -> store.addTime(todo.id, mins, today) }
                                     )
                                 }
@@ -1016,10 +1030,21 @@ private fun TodoCard(
     onDelete: () -> Unit,
     onSnooze: () -> Unit,
     onAttempt: (() -> Unit)? = null,
+    /** Clears the ATTEMPTED state (the toggle's other direction). */
+    onUnattempt: (() -> Unit)? = null,
     onAddTime: ((Int) -> Unit)? = null
 ) {
     val today = LocalDate.now()
     var menuOpen by remember(item.id) { mutableStateOf(false) }
+    // Declared up here (not in the text column) because BOTH the state line and
+    // the ⋮ menu need them: the menu offers the attempted toggle, the line shows
+    // the points the current state has actually banked.
+    val isAttempted = remember(item, today) { TodoCodec.isAttemptedOn(item, today) }
+    val timeSpent = remember(item, today) { TodoCodec.timeSpentOn(item, today) }
+    // Points banked for this occurrence — the same TodoStats.occurrenceScore
+    // every other surface uses, so a partial state (attempted / part of the
+    // time logged) is visibly worth something instead of silently earning 0.
+    val points = remember(item, today) { TodoStats.occurrenceScore(item, today) }
     val meta = remember(item, today, snoozeWindow, missedToday) {
         if (snoozeWindow != null) {
             // "Today: 1:58 PM → 2:08 PM" — the day + the snoozed window.
@@ -1160,12 +1185,14 @@ private fun TodoCard(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    val isAttempted = remember(item, today) { TodoCodec.isAttemptedOn(item, today) }
-                    val timeSpent = remember(item, today) { TodoCodec.timeSpentOn(item, today) }
                     if (item.behavior == TodoBehavior.ATTEMPTED && !completedToday) {
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text = if (isAttempted) "State: Attempted ✓" else "State: Not started",
+                            text = if (isAttempted) {
+                                "State: Attempted \u2713  ·  +${points.roundToInt()} pts"
+                            } else {
+                                "State: Not started"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = if (isAttempted) Color(0xFF00897B) else MaterialTheme.colorScheme.onSurfaceVariant
@@ -1174,10 +1201,14 @@ private fun TodoCard(
                         Spacer(Modifier.height(2.dp))
                         val target = item.targetDurationMinutes ?: 60
                         Text(
-                            text = "Time: ${timeSpent}m / ${target}m",
+                            text = "Time: ${timeSpent}m / ${target}m  ·  +${points.roundToInt()} pts",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (timeSpent >= target || completedToday) DONE_GREEN else MaterialTheme.colorScheme.primary
+                            color = when {
+                                timeSpent >= target || completedToday -> DONE_GREEN
+                                timeSpent > 0 -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         )
                     }
                 }
@@ -1222,12 +1253,28 @@ private fun TodoCard(
                                     }
                                 )
                             }
-                            if (item.behavior == TodoBehavior.ATTEMPTED && !completedToday && !missedToday && onAttempt != null) {
+                            // ATTEMPTED and TIME todos: a two-way toggle.
+                            // Marking it attempted banks partial points (for a
+                            // TIME todo, a 50% floor for a session that was
+                            // worked on but not logged); marking it unattempted
+                            // returns it to "Not started" and takes them back,
+                            // so the state is never one-way. A NORMAL todo stays
+                            // a plain done/not-done checkbox and gets no toggle.
+                            if (item.behavior != TodoBehavior.NORMAL && !completedToday && !missedToday &&
+                                (if (isAttempted) onUnattempt else onAttempt) != null
+                            ) {
                                 DropdownMenuItem(
-                                    text = { Text("Mark Attempted") },
-                                    onClick = { menuOpen = false; onAttempt() },
+                                    text = { Text(if (isAttempted) "Mark Unattempted" else "Mark Attempted") },
+                                    onClick = {
+                                        menuOpen = false
+                                        if (isAttempted) onUnattempt?.invoke() else onAttempt?.invoke()
+                                    },
                                     leadingIcon = {
-                                        Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Icon(
+                                            if (isAttempted) Icons.Filled.Close else Icons.Filled.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
                                     }
                                 )
                             }
@@ -2177,15 +2224,19 @@ private fun WeeklyInsightsCard(
 }
 
 /**
- * The card's hero: the week's completion as a ring, the raw ratio inside it,
- * the week-over-week trend and today's actionable remainder.
+ * The card's hero: the week's PROGRESS as a ring, the raw completed ratio
+ * beside it, the week-over-week trend and today's actionable remainder.
  *
- * Uses only real values: [TodoStats.WeekStats.rate]/[TodoStats.WeekStats.percent],
- * [TodoStats.WeekStats.remainingToday] and
- * [TodoStats.WeekStats.improvementPoints]; the trend is replaced by an
- * explanation (and by the score trend when history exists but this week's
- * completion rate has no previous-week counterpart) instead of a fabricated
- * number.
+ * The ring draws [TodoStats.WeekStats.creditRate], not the raw completion
+ * rate: marking a todo attempted or logging part of a time target is real
+ * effort, and it has to move the number at the top of the dashboard (it used
+ * to move only the 100-point score, so partial work looked like nothing had
+ * happened). When partial credit is what lifted the ring, a line says so — so
+ * "progress" is never mistaken for "completed".
+ *
+ * Every value is real: creditRate/rate, [TodoStats.WeekStats.remainingToday]
+ * and [TodoStats.WeekStats.improvementPoints]; the trend is replaced by an
+ * explanation instead of a fabricated number.
  */
 @Composable
 private fun InsightHero(stats: TodoStats.WeekStats, summary: TodoStats.ProductivitySummary) {
@@ -2194,8 +2245,8 @@ private fun InsightHero(stats: TodoStats.WeekStats, summary: TodoStats.Productiv
         verticalAlignment = Alignment.CenterVertically
     ) {
         ProgressRing(
-            fraction = stats.rate,
-            percentText = "${stats.percent}%",
+            fraction = stats.creditRate,
+            percentText = "${stats.creditPercent}%",
             captionText = stringResource(
                 R.string.todo_card_ring_caption,
                 stats.completed,
@@ -2222,6 +2273,19 @@ private fun InsightHero(stats: TodoStats.WeekStats, summary: TodoStats.Productiv
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
+            // Partial credit is real progress — say so when it is what lifted
+            // the ring, so the percentage can never be read as "completed".
+            if (stats.hasPartialCredit) {
+                Text(
+                    text = pluralStringResource(
+                        R.plurals.todo_card_partial_credit,
+                        stats.partialOccurrences,
+                        stats.partialOccurrences
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ATTEMPT_AMBER
+                )
+            }
             // Today's workload — the part that is still actionable.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val allDone = stats.remainingToday == 0
@@ -2605,12 +2669,15 @@ private fun TodoProductivityHeatmap(
     }
     val columns = remember(weeks, locale) {
         val fmt = monthShortFormat(locale)
+        val yearFmt = monthYearFormat(locale)
         var lastMonth: YearMonth? = null
-        weeks.map { monday ->
+        weeks.mapIndexed { index, monday ->
             val month = YearMonth.from(monday)
             val label = if (month != lastMonth) {
                 lastMonth = month
-                fmt.format(monday)
+                // The first column and every January carry the year.
+                if (index == 0 || month.monthValue == 1) yearFmt.format(monday)
+                else fmt.format(monday)
             } else null
             HeatmapColumn(monday, label)
         }

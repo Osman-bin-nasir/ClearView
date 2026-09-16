@@ -63,8 +63,14 @@ fun applyFeedFilter(
             FeedContentFilter.VIDEOS -> !v.isShort && v.platform == com.muddassir.clearview.media.model.MediaPlatform.YOUTUBE
             FeedContentFilter.SHORTS -> v.isShort && v.platform == com.muddassir.clearview.media.model.MediaPlatform.YOUTUBE
             FeedContentFilter.LIVE -> v.isLive
-            FeedContentFilter.REELS -> v.instagramType == com.muddassir.clearview.media.model.InstagramMediaType.REEL || v.instagramType == com.muddassir.clearview.media.model.InstagramMediaType.VIDEO || (v.platform == com.muddassir.clearview.media.model.MediaPlatform.INSTAGRAM && v.isShort)
-            FeedContentFilter.IMAGE_POSTS -> v.instagramType == com.muddassir.clearview.media.model.InstagramMediaType.IMAGE || v.instagramType == com.muddassir.clearview.media.model.InstagramMediaType.CAROUSEL || (v.platform == com.muddassir.clearview.media.model.MediaPlatform.INSTAGRAM && !v.isShort && v.instagramType == null)
+            // Reels = Instagram VIDEO items, posts = everything else Instagram
+            // (photo posts AND carousels, even a carousel with a video slide).
+            // Both go through the SAME rule the feed itself uses
+            // (MediaVideo.isInstagramVideo / isInstagramImage) instead of
+            // re-deriving it from the `isShort` flag, which the parsers set for
+            // any video-ish post — that is what let posts appear under Reels.
+            FeedContentFilter.REELS -> v.isInstagramVideo
+            FeedContentFilter.IMAGE_POSTS -> v.isInstagramImage
             FeedContentFilter.DOWNLOADS -> false
         } && platformOk
         val p = progressOf(v.videoId)

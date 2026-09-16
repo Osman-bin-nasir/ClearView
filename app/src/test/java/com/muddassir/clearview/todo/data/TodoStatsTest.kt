@@ -363,6 +363,105 @@ class TodoStatsTest {
     }
 
     @Test
+    fun `time based todos earn points before they are ever completed`() {
+        fun timeItem(id: String, minutes: Int, attempted: Boolean = false, done: Boolean = false) =
+            TodoItem(
+                id = id, title = id, startDateEpochDay = TODAY.toEpochDay(),
+                behavior = TodoBehavior.TIME, targetDurationMinutes = 60,
+                completions = if (done) mapOf(TODAY.toEpochDay() to 1L) else emptyMap(),
+                events = buildList {
+                    if (minutes > 0) add(TodoEvent.TimeAdded(2L, TODAY.toEpochDay(), minutes))
+                    if (attempted) add(TodoEvent.Attempted(3L, TODAY.toEpochDay()))
+                }
+            )
+
+        // 30 of 60 minutes logged and NOT ticked off → half credit, not zero.
+        assertEquals(5f, TodoStats.occurrenceScore(timeItem("half", 30), TODAY), 0.001f)
+        // A quarter of the target earns a quarter.
+        assertEquals(2.5f, TodoStats.occurrenceScore(timeItem("quarter", 15), TODAY), 0.001f)
+        // Nothing logged, nothing attempted → still zero (no free points).
+        assertEquals(0f, TodoStats.occurrenceScore(timeItem("untouched", 0), TODAY), 0.001f)
+        // Marked attempted with no time logged → the 50% floor.
+        assertEquals(
+            5f,
+            TodoStats.occurrenceScore(timeItem("attempted", 0, attempted = true), TODAY),
+            0.001f
+        )
+        // Completing it is worth at least half even with nothing logged.
+        assertEquals(
+            5f,
+            TodoStats.occurrenceScore(timeItem("ticked", 0, done = true), TODAY),
+            0.001f
+        )
+    }
+
+    @Test
+    fun `partial credit lifts the progress ring and the overall score`() {
+        val attempted = TodoItem(
+            id = "a", title = "a",
+            startDateEpochDay = TODAY.toEpochDay(), endDateEpochDay = TODAY.toEpochDay(),
+            behavior = TodoBehavior.ATTEMPTED
+        )
+        val before = TodoStats.weekStats(listOf(attempted), TODAY)
+        assertEquals(0, before.creditPercent)
+        assertEquals(0, before.score ?: 0)
+
+        val after = TodoStats.weekStats(
+            TodoCodec.attempted(listOf(attempted), "a", TODAY, 1L), TODAY
+        )
+        // The visible ring (credit-weighted progress) and the 100-point score
+        // BOTH move — partial work is not just a "+5 pts" chip on the card.
+        assertTrue(
+            "ring did not move: ${before.creditPercent} -> ${after.creditPercent}",
+            after.creditPercent > before.creditPercent
+        )
+        assertTrue(
+            "score did not move: ${before.score} -> ${after.score}",
+            (after.score ?: 0) > (before.score ?: 0)
+        )
+        assertTrue(after.hasPartialCredit)
+        assertEquals(1, after.partialOccurrences)
+        // The raw completed figure is untouched by an attempt.
+        assertEquals(before.percent, after.percent)
+    }
+
+    @Test
+    fun `logged time lifts the progress ring before a time todo is finished`() {
+        val timed = TodoItem(
+            id = "t", title = "t",
+            startDateEpochDay = TODAY.toEpochDay(), endDateEpochDay = TODAY.toEpochDay(),
+            behavior = TodoBehavior.TIME, targetDurationMinutes = 60
+        )
+        val empty = TodoStats.weekStats(listOf(timed), TODAY)
+        val half = TodoStats.weekStats(
+            listOf(timed.copy(events = listOf(TodoEvent.TimeAdded(1L, TODAY.toEpochDay(), 30)))),
+            TODAY
+        )
+        assertEquals(0, empty.creditPercent)
+        assertEquals(50, half.creditPercent)
+        assertTrue((half.score ?: 0) > (empty.score ?: 0))
+        assertEquals(1, half.partialOccurrences)
+        // 15 of 60 minutes is a quarter of the plan, not half.
+        val quarter = TodoStats.weekStats(
+            listOf(timed.copy(events = listOf(TodoEvent.TimeAdded(1L, TODAY.toEpochDay(), 15)))),
+            TODAY
+        )
+        assertEquals(25, quarter.creditPercent)
+    }
+
+    @Test
+    fun `a completed week reports progress equal to completion`() {
+        val done = item(
+            "done", start = TODAY, end = TODAY,
+            completions = mapOf(TODAY.toEpochDay() to 1L)
+        )
+        val stats = TodoStats.weekStats(listOf(done), TODAY)
+        assertEquals(stats.percent, stats.creditPercent)
+        assertFalse(stats.hasPartialCredit)
+        assertEquals(0, stats.partialOccurrences)
+    }
+
+    @Test
     fun `behavior counts split completed attempted and incomplete`() {
         val items = listOf(
             item("done", start = mon, end = mon, completions = mapOf(mon.toEpochDay() to at(mon, 8))),

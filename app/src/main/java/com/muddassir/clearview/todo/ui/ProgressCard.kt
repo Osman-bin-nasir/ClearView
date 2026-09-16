@@ -62,6 +62,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -73,6 +74,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Constraints
@@ -87,6 +90,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import com.muddassir.clearview.R
 import com.muddassir.clearview.todo.data.ProgressCardStats
+import java.time.Month
 import com.muddassir.clearview.todo.data.TodoStore
 import com.muddassir.clearview.todo.model.TodoItem
 import java.io.ByteArrayOutputStream
@@ -98,6 +102,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.random.Random
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -109,11 +115,23 @@ import kotlinx.coroutines.withContext
 private data class RenderedCard(val image: ImageBitmap, val bitmap: Bitmap)
 
 /**
+ * The card's display face: Barlow Condensed (SIL Open Font License — see
+ * licenses/OFL-BarlowCondensed.txt), Black for the hero number and Bold for
+ * every other piece of type. Shipping the file is what stops a 132px score from
+ * rendering as generic system Bold — and the layout engine never resolves a
+ * resource itself, so it stays pure JVM and unit-testable.
+ */
+private val CardDisplayFont = FontFamily(
+    Font(R.font.barlow_condensed_black, FontWeight.Black),
+    Font(R.font.barlow_condensed_bold, FontWeight.Bold)
+)
+
+/**
  * The shareable Progress Card generator — a full-screen dialog in two steps:
  *
  *  1. Name + time range → Generate Card.
- *  2. Live preview (Story 1080×1920 / Square 1080×1080) + Save to gallery,
- *     Share sheet and Regenerate.
+ *  2. Live preview (1080×1920 Story) + Save to gallery, Share sheet and
+ *     Regenerate.
  *
  * The card itself is drawn VECTOR-STRAIGHT INTO A BITMAP at full export
  * resolution ([CanvasDrawScope] over an off-screen [android.graphics.Bitmap]),
@@ -153,7 +171,6 @@ private fun ProgressCardFlow(
     var range by remember { mutableStateOf(ProgressCardStats.RangeKind.WEEK) }
     var customFrom by remember { mutableStateOf<LocalDate?>(null) }
     var customTo by remember { mutableStateOf<LocalDate?>(null) }
-    var isStory by remember { mutableStateOf(true) }
     var card by remember { mutableStateOf<ProgressCardStats.CardStats?>(null) }
     var generating by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -222,8 +239,6 @@ private fun ProgressCardFlow(
                 CardPreviewStep(
                     stats = stats,
                     name = name,
-                    isStory = isStory,
-                    onStoryChange = { isStory = it },
                     onRegenerate = {
                         step = 0
                         card = null
@@ -394,14 +409,12 @@ private fun NameInputStep(
 private fun CardPreviewStep(
     stats: ProgressCardStats.CardStats,
     name: String,
-    isStory: Boolean,
-    onStoryChange: (Boolean) -> Unit,
     onRegenerate: () -> Unit
 ) {
     val context = LocalContext.current
     // The score is always the range's own v2 score — the card is a
     // self-contained analytics dashboard for the selected period.
-    val rendered = rememberProgressCardImage(stats, name, context, isStory)
+    val rendered = rememberProgressCardImage(stats, name, context)
     val cardSavedMsg = stringResource(R.string.progress_card_saved)
     val cardSaveFailedMsg = stringResource(R.string.progress_card_save_failed)
 
@@ -426,30 +439,20 @@ private fun CardPreviewStep(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 8.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            FilterChip(
-                selected = isStory,
-                onClick = { onStoryChange(true) },
-                label = { Text(stringResource(R.string.progress_card_story)) }
-            )
-            Spacer(Modifier.width(8.dp))
-            FilterChip(
-                selected = !isStory,
-                onClick = { onStoryChange(false) },
-                label = { Text(stringResource(R.string.progress_card_square)) }
-            )
-        }
-        Spacer(Modifier.height(16.dp))
+        // One size only: the Story canvas is what the card is designed for, so
+        // there is no size switch to get wrong.
+        Text(
+            text = stringResource(R.string.progress_card_story),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
         Image(
             bitmap = rendered.image,
             contentDescription = stringResource(R.string.progress_card_title),
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(if (isStory) 1080f / 1920f else 1f)
+                .aspectRatio(CARD_WIDTH / CARD_HEIGHT)
                 .clip(RoundedCornerShape(24.dp))
         )
         Spacer(Modifier.height(16.dp))
@@ -495,32 +498,33 @@ private fun CardPreviewStep(
 
 /**
  * Renders [stats] into an off-screen [Bitmap] at full export resolution
- * (1080×1920 story / 1080×1080 square) via [CanvasDrawScope], returning both
- * the composable preview surface and the raw bitmap for save/share. Re-renders
- * whenever the stats, name or size change.
+ * (1080×1920) via [CanvasDrawScope], returning both the composable preview
+ * surface and the raw bitmap for save/share. Re-renders whenever the stats or
+ * the name change.
  */
 @Composable
 private fun rememberProgressCardImage(
     stats: ProgressCardStats.CardStats,
     name: String,
-    context: Context,
-    isStory: Boolean
+    context: Context
 ): RenderedCard {
     val textMeasurer = rememberTextMeasurer(cacheSize = 64)
     val density = Density(1f) // draw in raw pixels: 1 sp/dp == 1 px
     val appIcon = remember { loadAppIcon(context) }
     val grain = remember { createGrainBitmap() }
-    val width = 1080
-    val height = if (isStory) 1920 else 1080
+    val width = CARD_WIDTH.toInt()
+    val height = CARD_HEIGHT.toInt()
     // Draw SYNCHRONOUSLY while creating the bitmap so the preview never shows
     // a blank frame: CanvasDrawScope.draw is synchronous, and this only re-runs
-    // when the stats/name/size actually change (a button tap), not on every
+    // when the stats/name actually change (a button tap), not on every
     // recomposition.
-    return remember(stats, name, isStory) {
+    return remember(stats, name) {
         val texts = buildTexts(stats, name, context)
+        // Every chromatic value on the card follows from the range's tier.
+        val palette = paletteFor(texts.tier)
         // 1. Lay out every element as a measured block (flex-column flow).
         val blocks = layoutProgressCard(
-            texts, appIcon != null, isStory
+            texts, appIcon != null, CardDisplayFont
         ) { text, style, maxWidth ->
             // ceil: never constrain below the layout width, or a borderline
             // single-line text would re-wrap during the draw pass.
@@ -545,8 +549,8 @@ private fun rememberProgressCardImage(
             androidx.compose.ui.graphics.Canvas(image),
             Size(width.toFloat(), height.toFloat())
         ) {
-            drawProgressCardBackground(grain)
-            drawCardBlocks(blocks, appIcon, textMeasurer)
+            drawProgressCardBackground(grain, palette)
+            drawCardBlocks(blocks, appIcon, textMeasurer, palette)
         }
         RenderedCard(image, bitmap)
     }
@@ -568,22 +572,49 @@ private fun buildTexts(
             ProgressCardStats.RangeKind.CUSTOM -> R.string.progress_card_score_period
         }
     )
-    val firstWeekBadge = stats.firstWeek
-    val statLabels = listOf(
-        context.getString(R.string.progress_card_created),
-        context.getString(R.string.progress_card_completed),
-        context.getString(R.string.progress_card_incomplete),
-        context.getString(R.string.progress_card_streak),
-        context.getString(R.string.progress_card_active)
+    // The contribution grid always spans at least twelve Monday-aligned weeks
+    // ending at the range's last day, so every range reads as a real GitHub
+    // graph. Days before the range starts are drawn hollow (context, not data),
+    // and the year is spelled out on every January so a year-long grid can never
+    // show two ambiguous "Aug" labels.
+    val shortMonth = DateTimeFormatter.ofPattern("MMM", Locale.ENGLISH)
+    val monthYear = DateTimeFormatter.ofPattern("MMM yy", Locale.ENGLISH)
+    val grid = buildCardGrid(stats.heatmap, stats.from) { date ->
+        if (date.month == Month.JANUARY) monthYear.format(date) else shortMonth.format(date)
+    }
+    // The six numbers the table carries. Every slot has to earn its place, so
+    // they are deliberately DISJOINT: each says something the other five do not,
+    // and none of them restates the hero score above.
+    val tableStats = listOf(
+        CardStat(
+            label(context, R.string.progress_card_completed),
+            stats.completed.toString()
+        ),
+        CardStat(
+            label(context, R.string.progress_card_active),
+            stats.activeDays.toString()
+        ),
+        CardStat(
+            label(context, R.string.progress_card_current_streak),
+            // No comparison history yet → an honest dash, never a fake "0 days".
+            if (stats.firstWeek) "\u2014" else stats.currentStreak.toString() + days
+        ),
+        CardStat(
+            label(context, R.string.progress_card_best_streak),
+            stats.bestStreak.toString()
+        ),
+        CardStat(
+            label(context, R.string.progress_card_perfect_days),
+            stats.perfectDays.toString()
+        ),
+        CardStat(
+            label(context, R.string.progress_card_incomplete),
+            stats.missed.toString()
+        )
     )
-    val statValues = listOf(
-        stats.created.toString(),
-        stats.completed.toString(),
-        stats.missed.toString(),
-        if (firstWeekBadge) context.getString(R.string.progress_card_first_week)
-        else stats.currentStreak.toString() + days,
-        stats.activeDays.toString()
-    )
+    // The range's grade — the one line that turns the number above it into a
+    // verdict. Null (no data) leaves the card on its neutral teal accent.
+    val tier = ProgressCardStats.tierFor(stats.score)
 
     return CardTexts(
         nameProgress = context.getString(R.string.progress_card_your_progress, name.trim().take(24)),
@@ -595,11 +626,65 @@ private fun buildTexts(
         percentLine = stats.score?.let {
             context.getString(R.string.progress_card_completion, stats.percent)
         },
+        tierLabel = tier?.let { context.getString(tierLabelRes(it)).uppercase() },
+        tier = tier,
         emptyRange = context.getString(R.string.progress_card_empty_range),
-        statLabels = statLabels,
-        statValues = statValues,
-        firstWeekBadge = firstWeekBadge,
-        madeWith = context.getString(R.string.progress_card_made_with, appName)
+        stats = tableStats,
+        summary = summarize(stats, context),
+        activityTitle = context.getString(R.string.progress_card_activity),
+        grid = grid,
+        legendLess = context.getString(R.string.progress_card_legend_less),
+        legendMore = context.getString(R.string.progress_card_legend_more),
+        // The best day is real, specific evidence of progress; on a first week
+        // there is no comparison history yet, so the honest edge-state line wins.
+        note = when {
+            stats.firstWeek -> context.getString(R.string.progress_card_first_week)
+            stats.bestDay?.done?.let { it > 0 } == true -> context.getString(
+                R.string.progress_card_best_day,
+                DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH).format(stats.bestDay.date),
+                stats.bestDay.done
+            )
+            else -> null
+        },
+        madeWith = context.getString(R.string.progress_card_made_with, appName).uppercase(),
+        // The card is signed by the person who earned it, the way a shared
+        // poster is credited — not by the brand alone.
+        signature = name.trim().uppercase()
+    )
+}
+
+/**
+ * A table label, uppercased for the card's small-caps style. Upper-cased with
+ * [Locale.ROOT] rather than the device locale so the card's type never shifts
+ * shape with the reader's language.
+ */
+private fun label(context: Context, resId: Int): String =
+    context.getString(resId).uppercase(Locale.ROOT)
+
+/** The card-facing name of an achievement tier. */
+private fun tierLabelRes(tier: ProgressCardStats.Tier): Int = when (tier) {
+    ProgressCardStats.Tier.BRONZE -> R.string.progress_card_tier_bronze
+    ProgressCardStats.Tier.SILVER -> R.string.progress_card_tier_silver
+    ProgressCardStats.Tier.GOLD -> R.string.progress_card_tier_gold
+    ProgressCardStats.Tier.PLATINUM -> R.string.progress_card_tier_platinum
+    ProgressCardStats.Tier.DIAMOND -> R.string.progress_card_tier_diamond
+}
+
+/**
+ * One short, honest verdict for the range, chosen from the real completion rate
+ * (never invented, and null while the range has no data at all). The thresholds
+ * describe the range the user actually selected, so the sentence can never
+ * contradict the number above it.
+ */
+private fun summarize(stats: ProgressCardStats.CardStats, context: Context): String? {
+    if (stats.score == null) return null
+    return context.getString(
+        when {
+            stats.percent >= 80 -> R.string.progress_card_summary_high
+            stats.percent >= 60 -> R.string.progress_card_summary_good
+            stats.percent >= 40 -> R.string.progress_card_summary_mixed
+            else -> R.string.progress_card_summary_low
+        }
     )
 }
 
@@ -640,18 +725,20 @@ private fun createGrainBitmap(size: Int = 128): ImageBitmap {
 
 // ── The poster drawing (DrawScope over the off-screen bitmap) ──────────
 
-private fun DrawScope.drawProgressCardBackground(grain: ImageBitmap?) {
+private fun DrawScope.drawProgressCardBackground(grain: ImageBitmap?, palette: CardPalette) {
     val w = size.width
     val h = size.height
 
-    // Flat black + a teal-tinted vertical gradient and a radial glow behind
-    // the hero — the "designed, not a screenshot" backdrop.
+    // Flat black + a tier-tinted vertical gradient and a radial glow behind
+    // the hero — the "designed, not a screenshot" backdrop. The glow carries
+    // the tier's colour (and gets brighter with it), so the card's whole
+    // ambience shifts as the user climbs.
     drawRect(
         brush = Brush.verticalGradient(listOf(CardBgTop, CardBgBottom))
     )
     drawCircle(
         brush = Brush.radialGradient(
-            colors = listOf(CardTeal.copy(alpha = 0.10f), Color.Transparent),
+            colors = listOf(palette.glow, Color.Transparent),
             center = Offset(w / 2f, h * 0.30f),
             radius = w * 0.60f
         ),
@@ -685,7 +772,12 @@ private fun DrawScope.drawProgressCardBackground(grain: ImageBitmap?) {
  * produced by [layoutProgressCard] — this pass never re-derives positions, so
  * the QA-verified layout is exactly what gets exported.
  */
-private fun DrawScope.drawCardBlocks(blocks: List<CardBlock>, appIcon: ImageBitmap?, tm: TextMeasurer) {
+private fun DrawScope.drawCardBlocks(
+    blocks: List<CardBlock>,
+    appIcon: ImageBitmap?,
+    tm: TextMeasurer,
+    palette: CardPalette
+) {
     blocks.forEach { block ->
         when (block) {
             is CardBlock.Text ->
@@ -698,7 +790,106 @@ private fun DrawScope.drawCardBlocks(blocks: List<CardBlock>, appIcon: ImageBitm
                     size = Size(block.rect.width, block.rect.height)
                 )
 
-            is CardBlock.Icon -> drawIconBlock(block, appIcon, tm)
+            is CardBlock.Icon -> drawIconBlock(block, appIcon, tm, palette)
+
+            is CardBlock.Panel -> drawRoundRect(
+                color = Color.White.copy(alpha = 0.05f),
+                topLeft = Offset(block.rect.left, block.rect.top),
+                size = Size(block.rect.width, block.rect.height),
+                cornerRadius = CornerRadius(28f)
+            )
+
+            is CardBlock.Swatch -> drawRoundRect(
+                color = palette.heat[block.level.coerceIn(0, palette.heat.lastIndex)],
+                topLeft = Offset(block.rect.left, block.rect.top),
+                size = Size(block.rect.width, block.rect.height),
+                cornerRadius = CornerRadius(block.rect.width * 0.24f)
+            )
+
+            is CardBlock.Star -> drawStarBlock(block, palette)
+
+            is CardBlock.Grid -> drawGridBlock(block, tm, palette)
+        }
+    }
+}
+
+/**
+ * The tier badge's mark: a five-point star in the tier's accent, drawn as a
+ * vector. Vector shapes stay crisp at export resolution and keep the card free
+ * of emoji, whose size and colour belong to whichever font the platform picks.
+ */
+private fun DrawScope.drawStarBlock(block: CardBlock.Star, palette: CardPalette) {
+    val r = block.rect
+    val cx = (r.left + r.right) / 2f
+    val cy = (r.top + r.bottom) / 2f
+    val outer = minOf(r.width, r.height) / 2f
+    val inner = outer * 0.46f
+    val path = Path()
+    repeat(10) { i ->
+        val radius = if (i % 2 == 0) outer else inner
+        // -90° first, so the star stands on a point instead of a flat edge.
+        val angle = Math.toRadians(-90.0 + i * 36.0)
+        val x = cx + (radius * cos(angle)).toFloat()
+        val y = cy + (radius * sin(angle)).toFloat()
+        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    }
+    path.close()
+    drawPath(path, palette.accent)
+}
+
+/**
+ * The contribution grid: one rounded square per day, column per week (Monday at
+ * the top), shaded by the day's completion intensity — or drawn hollow when the
+ * day falls outside the scored range. Month labels are pinned above their own
+ * column inside the same block, so nothing can drift from its squares.
+ */
+private fun DrawScope.drawGridBlock(
+    block: CardBlock.Grid,
+    tm: TextMeasurer,
+    palette: CardPalette
+) {
+    val radius = CornerRadius(block.cell * 0.24f)
+    block.monthLabels.forEach { (column, label) ->
+        val style = TextStyle(
+            fontSize = block.labelFont.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = CardTextDim
+        )
+        val layout = tm.measure(AnnotatedString(label), style)
+        drawText(
+            layout,
+            topLeft = Offset(
+                block.rect.left + column * (block.cell + block.gap),
+                block.rect.top + (block.labelRow - layout.size.height) / 2f
+            )
+        )
+    }
+    val gridTop = block.rect.top + block.labelRow
+    block.levels.forEachIndexed { index, level ->
+        if (level == GRID_NO_CELL) return@forEachIndexed
+        val column = index / block.rows
+        val row = index % block.rows
+        val left = block.rect.left + column * (block.cell + block.gap)
+        val top = gridTop + row * (block.cell + block.gap)
+        if (level == GRID_OUTSIDE_RANGE) {
+            // A day the graph shows but the range never scored: a hollow
+            // square, so the leading context weeks read as "not measured"
+            // rather than as days the user did nothing.
+            val inset = block.cell * 0.13f
+            drawRoundRect(
+                color = CardGridGhost,
+                topLeft = Offset(left + inset, top + inset),
+                size = Size(block.cell - inset * 2f, block.cell - inset * 2f),
+                cornerRadius = radius,
+                style = Stroke(width = (block.cell * 0.06f).coerceAtLeast(1.5f))
+            )
+        } else {
+            drawRoundRect(
+                color = palette.heat[level.coerceIn(0, palette.heat.lastIndex)],
+                topLeft = Offset(left, top),
+                size = Size(block.cell, block.cell),
+                cornerRadius = radius
+            )
         }
     }
 }
@@ -715,7 +906,12 @@ private fun DrawScope.drawTextBlock(text: String, style: TextStyle, rect: CardRe
 }
 
 /** The app logo raster (or a teal ✓ tile as fallback) inside its block. */
-private fun DrawScope.drawIconBlock(block: CardBlock.Icon, appIcon: ImageBitmap?, tm: TextMeasurer) {
+private fun DrawScope.drawIconBlock(
+    block: CardBlock.Icon,
+    appIcon: ImageBitmap?,
+    tm: TextMeasurer,
+    palette: CardPalette
+) {
     val corner = CornerRadius(block.rect.width * 0.24f)
     if (block.useAppIcon && appIcon != null) {
         drawRoundRect(
@@ -733,7 +929,7 @@ private fun DrawScope.drawIconBlock(block: CardBlock.Icon, appIcon: ImageBitmap?
         )
     } else {
         drawRoundRect(
-            color = CardTeal,
+            color = palette.accent,
             topLeft = Offset(block.rect.left, block.rect.top),
             size = Size(block.rect.width, block.rect.height),
             cornerRadius = corner

@@ -41,6 +41,16 @@ class TodoStore(context: Context) {
         saveItems(updated)
     }
 
+    /**
+     * Clears a todo's ATTEMPTED state on [day] (for ATTEMPTED behavior) — the
+     * "Unattempted" half of the toggle shown in the card's ⋮ menu.
+     */
+    fun markUnattempted(id: String, day: LocalDate = LocalDate.now()) {
+        val current = getItems()
+        val updated = TodoCodec.unattempted(current, id, day, System.currentTimeMillis())
+        saveItems(updated)
+    }
+
     /** Adds time to a todo on [day] (for TIME behavior). */
     fun addTime(id: String, minutes: Int, day: LocalDate = LocalDate.now()) {
         val current = getItems()

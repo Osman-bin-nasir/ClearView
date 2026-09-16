@@ -50,7 +50,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
@@ -341,12 +341,23 @@ fun VideoPlayerScreen(
     val resumeFromSeconds =
         if (hasPartialProgress) savedProgress!!.positionSeconds.toDouble() else 0.0
 
-    // Continue Watching / Watch Again re-seek (no reload).
+    // Continue Watching / Watch Again re-seek (no reload) — "resume here",
+    // so it seeks AND plays.
     var seekToken by remember { mutableIntStateOf(0) }
     var seekToSeconds by remember { mutableStateOf(0.0) }
     val requestSeek: (Double) -> Unit = { target ->
         seekToSeconds = target
         seekToken++
+    }
+    // Timeline scrubbing from the app's own transport bar — "move the
+    // playhead", so a paused video STAYS paused (the two channels are
+    // deliberately distinct). Instagram honours this through its existing
+    // seek channel: MediaPlayer.seekTo() never changes the play state either.
+    var scrubToken by remember { mutableIntStateOf(0) }
+    var scrubToSeconds by remember { mutableStateOf(0.0) }
+    val requestScrub: (Double) -> Unit = { target ->
+        scrubToSeconds = target
+        scrubToken++
     }
 
     // Playback speed, persisted across restarts.
@@ -589,6 +600,8 @@ fun VideoPlayerScreen(
                     playbackRate = playbackRate,
                     seekToken = seekToken,
                     seekToSeconds = seekToSeconds,
+                    scrubToken = scrubToken,
+                    scrubToSeconds = scrubToSeconds,
                     commandToken = commandToken,
                     command = command,
                     muted = isMuted,
@@ -781,35 +794,54 @@ fun VideoPlayerScreen(
                 }
             }
 
-            // ── Shorts viewer transport bar: play/pause + mute (the iframe's
-            // own controls are hidden behind the swipe layer, so the viewer
-            // gets its own always-visible controls). Drawn ABOVE the swipe
-            // layer so the buttons stay tappable. Shown ONLY for Shorts — a
-            // long video in vertical fullscreen has no swipe layer, so the
-            // embed's own on-video controls remain reachable.
+            // ── Shorts viewer transport: the SAME control set as the portrait
+            // panel (time, seek, play/pause, ±10 s, volume, speed) plus the
+            // queue arrows — the embed's own controls sit behind the swipe
+            // layer, so this is the only chrome the viewer shows. Drawn ABOVE
+            // the swipe layer so the buttons stay tappable, and it is the last
+            // child of the video box so nothing can cover it. Shown ONLY for
+            // Shorts: a long video in vertical fullscreen has no swipe layer,
+            // so its embed controls stay reachable as before.
             if (fullscreenVertical && shortsQueue.isNotEmpty()) {
-                ShortsControlBar(
-                    isPlaying = playerState == YtState.PLAYING,
-                    isMuted = isMuted,
-                    canGoPrevious = shortsIndex > 0,
-                    canGoNext = shortsIndex < shortsQueue.size - 1,
-                    onTogglePlay = {
-                        sendCommand(if (playerState == YtState.PLAYING) "pause" else "play")
-                    },
-                    onToggleMute = {
-                        val target = !isMuted
-                        isMuted = target
-                        playerPrefs.edit().putBoolean(KEY_MUTED, target).apply()
-                        sendCommand(if (target) "mute" else "unmute")
-                    },
-                    onSeekBack = { sendCommand("back10") },
-                    onSeekForward = { sendCommand("fwd10") },
-                    onPrevious = { onNavigateShorts(-1) },
-                    onNext = { onNavigateShorts(1) },
+                Surface(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = 20.dp)
-                )
+                        .padding(horizontal = 12.dp, vertical = 16.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    color = Color.Black.copy(alpha = 0.55f)
+                ) {
+                    VideoTransportControls(
+                        state = TransportState(
+                            positionSeconds = transportPosition,
+                            durationSeconds = transportDuration,
+                            isPlaying = isPlaying,
+                            isBuffering = isMediaBuffering,
+                            isMuted = isMuted,
+                            canSeek = transportDuration > 0.0 && !isLiveNow,
+                            show = true
+                        ),
+                        onTogglePlay = {
+                            sendCommand(if (isPlaying) "pause" else "play")
+                        },
+                        onSeekBack10 = { sendCommand("back10") },
+                        onSeekForward10 = { sendCommand("fwd10") },
+                        onSeek = { target -> requestScrub(target) },
+                        onToggleMute = {
+                            val target = !isMuted
+                            isMuted = target
+                            playerPrefs.edit().putBoolean(KEY_MUTED, target).apply()
+                            sendCommand(if (target) "mute" else "unmute")
+                        },
+                        onDark = true,
+                        playbackRate = playbackRate,
+                        onSelectRate = { setPlaybackRate(it) },
+                        onPrevious = { onNavigateShorts(-1) },
+                        onNext = { onNavigateShorts(1) },
+                        canGoPrevious = shortsIndex > 0,
+                        canGoNext = shortsIndex < shortsQueue.size - 1,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
+                }
             }
 
             // ── Loading placeholder: a blurred thumbnail of the actual video
@@ -1041,7 +1073,10 @@ fun VideoPlayerScreen(
                 onTogglePlay = { sendCommand(if (isPlaying) "pause" else "play") },
                 onSeekBack10 = { sendCommand("back10") },
                 onSeekForward10 = { sendCommand("fwd10") },
-                onSeek = { target -> requestSeek(target) },
+                // YouTube scrubs through the dedicated "move the playhead"
+                // channel (paused stays paused); Instagram's seekTo already
+                // behaves that way, so it reuses its own seek channel.
+                onSeek = { target -> if (isInstagram) requestSeek(target) else requestScrub(target) },
                 onToggleMute = {
                     val target = !isMuted
                     isMuted = target
@@ -1510,7 +1545,7 @@ private fun PlayerControlPanel(
                 }
             }
             PanelAction(
-                icon = Icons.Filled.PlaylistAdd,
+                icon = Icons.AutoMirrored.Filled.PlaylistAdd,
                 label = "Playlist",
                 onClick = onAddToPlaylist,
                 modifier = Modifier.weight(1f)
@@ -1524,7 +1559,7 @@ private fun PlayerControlPanel(
         // (no scrubbable timeline) and still image posts (no playback).
         if (transport.show) {
             Spacer(Modifier.height(10.dp))
-            VideoTransportBar(
+            VideoTransportControls(
                 state = transport,
                 onTogglePlay = onTogglePlay,
                 onSeekBack10 = onSeekBack10,
@@ -1812,76 +1847,6 @@ private fun PanelAction(
 }
 
 /**
- * The Shorts fullscreen transport bar: previous / play-pause / mute / next.
- * The IFrame player's own on-video controls are unreachable behind the swipe
- * layer, so this always-visible bar provides the essential controls.
- */
-@Composable
-private fun ShortsControlBar(
-    isPlaying: Boolean,
-    isMuted: Boolean,
-    canGoPrevious: Boolean,
-    canGoNext: Boolean,
-    onTogglePlay: () -> Unit,
-    onToggleMute: () -> Unit,
-    onSeekBack: () -> Unit,
-    onSeekForward: () -> Unit,
-    onPrevious: () -> Unit,
-    onNext: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(30.dp),
-        color = Color.Black.copy(alpha = 0.6f)
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-        ) {
-            TransportIconButton(
-                icon = Icons.Filled.KeyboardArrowUp,
-                label = "Previous short",
-                enabled = canGoPrevious,
-                onClick = onPrevious
-            )
-            TransportIconButton(
-                icon = Icons.Filled.Replay10,
-                label = "Back 10 seconds",
-                enabled = true,
-                onClick = onSeekBack
-            )
-            TransportIconButton(
-                icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                label = if (isPlaying) "Pause" else "Play",
-                enabled = true,
-                onClick = onTogglePlay,
-                emphasized = true
-            )
-            TransportIconButton(
-                icon = Icons.Filled.Forward10,
-                label = "Forward 10 seconds",
-                enabled = true,
-                onClick = onSeekForward
-            )
-            TransportIconButton(
-                icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff
-                else Icons.AutoMirrored.Filled.VolumeUp,
-                label = if (isMuted) "Unmute" else "Mute",
-                enabled = true,
-                onClick = onToggleMute
-            )
-            TransportIconButton(
-                icon = Icons.Filled.KeyboardArrowDown,
-                label = "Next short",
-                enabled = canGoNext,
-                onClick = onNext
-            )
-        }
-    }
-}
-
-/**
  * The transport bar's state, always built from the REAL player (see the
  * per-platform state block in [VideoPlayerScreen]).
  *
@@ -1900,34 +1865,61 @@ private data class TransportState(
 )
 
 /**
- * The app's own playback controls, placed BELOW the action icons (⋮ / Share /
- * Speed / Playlist) so they never cover the video:
+ * The app's own playback controls. There is exactly ONE implementation: the
+ * portrait control panel (below the ⋮ / Share / Speed / Playlist row) and the
+ * fullscreen Shorts viewer both render this, so the two can never drift apart.
  *
  *    0:32 ──────────●─────── 3:45
- *         ◀10s    ▶/❚❚   10s▶   🔇
+ *    ⇧  ◀10s   ▶/❚❚   10s▶  🔊  1.25x
  *
- * Every control maps to a supported call on the running player — the YouTube
- * IFrame API (`playVideo` / `pauseVideo` / `seekBy` / `seekToSeconds`) or the
- * native MediaPlayer used for Instagram (start / pause / seekTo). The position
- * and duration shown are the players' own reports; nothing is simulated, and
- * the slider seeks for real when released.
+ * Every control drives the REAL running player — the YouTube IFrame API
+ * (`playVideo` / `pauseVideo` / `seekBy` / `scrubTo`) or the native MediaPlayer
+ * used for Instagram (start / pause / seekTo) — and the position/duration shown
+ * are the player's own reports. Nothing here is a decorative control.
+ *
+ * The layout is deliberately responsive: the time labels use a MINIMUM width
+ * (so "1:25:46" is never clipped) and the slider takes the remaining space, so
+ * the row cannot overflow horizontally at any width, and the button row simply
+ * centres however many buttons apply.
+ *
+ * @param onDark white-on-video styling for the fullscreen Shorts viewer. The
+ *   panel sits on a surface, where theme colours are the only readable choice
+ *   in a light theme (the previous hardcoded white icons were invisible there).
+ * @param playbackRate when non-null, a speed entry is offered (Shorts viewer);
+ *   the panel omits it because its action row already owns a Speed button with
+ *   the full preset list, and two speed menus on one screen would be noise.
+ * @param onPrevious / [onNext] queue navigation (the Shorts queue). Omitting
+ *   both removes the arrows — a stand-alone video has no queue to walk.
  */
 @Composable
-private fun VideoTransportBar(
+private fun VideoTransportControls(
     state: TransportState,
     onTogglePlay: () -> Unit,
     onSeekBack10: () -> Unit,
     onSeekForward10: () -> Unit,
     onSeek: (Double) -> Unit,
     onToggleMute: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onDark: Boolean = false,
+    playbackRate: Double? = null,
+    onSelectRate: ((Double) -> Unit)? = null,
+    onPrevious: (() -> Unit)? = null,
+    onNext: (() -> Unit)? = null,
+    canGoPrevious: Boolean = true,
+    canGoNext: Boolean = true
 ) {
     // While the user drags, the slider follows the finger instead of the
     // player's periodic position reports; the seek is committed on release.
     var dragTo by remember { mutableStateOf<Float?>(null) }
+    var showRateMenu by remember { mutableStateOf(false) }
     val max = if (state.canSeek) state.durationSeconds.toFloat() else 0f
     val position = dragTo
         ?: state.positionSeconds.toFloat().coerceIn(0f, if (max > 0f) max else 0f)
+    // Over the video: white. On the panel's surface: theme colours (visible in
+    // both light and dark themes).
+    val labelColor = if (onDark) Color.White.copy(alpha = 0.9f)
+        else MaterialTheme.colorScheme.onSurfaceVariant
+    val iconTint = if (onDark) Color.White else MaterialTheme.colorScheme.primary
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
@@ -1937,7 +1929,7 @@ private fun VideoTransportBar(
             Text(
                 text = formatPosition((dragTo ?: position).toLong()),
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = labelColor,
                 // A minimum rather than a fixed width: "1:25:46" must never be
                 // clipped, and the slider absorbs the difference.
                 modifier = Modifier.widthIn(min = 48.dp),
@@ -1959,7 +1951,7 @@ private fun VideoTransportBar(
             Text(
                 text = if (max > 0f) formatPosition(max.toLong()) else "--:--",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = labelColor,
                 modifier = Modifier.widthIn(min = 48.dp),
                 maxLines = 1,
                 softWrap = false,
@@ -1971,11 +1963,23 @@ private fun VideoTransportBar(
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Previous / next (the Shorts queue) — only when the caller has a
+            // queue to walk. Up/down matches the swipe direction in the viewer.
+            onPrevious?.let {
+                TransportIconButton(
+                    icon = Icons.Filled.KeyboardArrowUp,
+                    label = "Previous short",
+                    enabled = canGoPrevious,
+                    onClick = it,
+                    tint = iconTint
+                )
+            }
             TransportIconButton(
                 icon = Icons.Filled.Replay10,
                 label = "Back 10 seconds",
                 enabled = true,
-                onClick = onSeekBack10
+                onClick = onSeekBack10,
+                tint = iconTint
             )
             // Play / pause — or a buffering spinner in the same slot, so the
             // state is obvious without an extra row of chrome.
@@ -1995,22 +1999,66 @@ private fun VideoTransportBar(
                     label = if (state.isPlaying) "Pause" else "Play",
                     enabled = true,
                     onClick = onTogglePlay,
-                    emphasized = true
+                    emphasized = true,
+                    tint = iconTint
                 )
             }
             TransportIconButton(
                 icon = Icons.Filled.Forward10,
                 label = "Forward 10 seconds",
                 enabled = true,
-                onClick = onSeekForward10
+                onClick = onSeekForward10,
+                tint = iconTint
             )
             TransportIconButton(
                 icon = if (state.isMuted) Icons.AutoMirrored.Filled.VolumeOff
                 else Icons.AutoMirrored.Filled.VolumeUp,
                 label = if (state.isMuted) "Unmute" else "Mute",
                 enabled = true,
-                onClick = onToggleMute
+                onClick = onToggleMute,
+                tint = iconTint
             )
+            // Speed — the SAME real player call the panel's Speed action uses
+            // (setPlaybackRate through the IFrame API / setPlaybackParams for
+            // Instagram). Offered here because the fullscreen Shorts viewer has
+            // no control panel to reach the Speed action in.
+            if (playbackRate != null && onSelectRate != null) {
+                Box {
+                    TransportIconButton(
+                        icon = Icons.Filled.Speed,
+                        label = "Playback speed ${formatRate(playbackRate)}",
+                        enabled = true,
+                        onClick = { showRateMenu = true },
+                        tint = iconTint
+                    )
+                    DropdownMenu(
+                        expanded = showRateMenu,
+                        onDismissRequest = { showRateMenu = false }
+                    ) {
+                        SPEED_OPTIONS.forEach { rate ->
+                            DropdownMenuItem(
+                                text = { Text(formatRate(rate)) },
+                                trailingIcon = if (rate == playbackRate) {
+                                    { Icon(Icons.Filled.Check, contentDescription = null) }
+                                } else null,
+                                onClick = {
+                                    showRateMenu = false
+                                    onSelectRate(rate)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+            onNext?.let {
+                TransportIconButton(
+                    icon = Icons.Filled.KeyboardArrowDown,
+                    label = "Next short",
+                    enabled = canGoNext,
+                    onClick = it,
+                    tint = iconTint
+                )
+            }
         }
     }
 }
@@ -2021,7 +2069,8 @@ private fun TransportIconButton(
     label: String,
     enabled: Boolean,
     onClick: () -> Unit,
-    emphasized: Boolean = false
+    emphasized: Boolean = false,
+    tint: Color = Color.White
 ) {
     IconButton(
         onClick = onClick,
@@ -2031,7 +2080,7 @@ private fun TransportIconButton(
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = Color.White.copy(alpha = if (enabled) 1f else 0.4f),
+            tint = tint.copy(alpha = if (enabled) 1f else 0.4f),
             modifier = Modifier.size(if (emphasized) 34.dp else 28.dp)
         )
     }
@@ -2125,7 +2174,18 @@ private fun instagramPortraitBox(video: MediaVideo, mediaAspect: Float): Modifie
         else -> 1f
     }
     val natural = screenWidth / ratio
-    val height = minOf(natural, screenHeight * MAX_PORTRAIT_VIDEO_FRACTION)
+    // Shorter of: the media's own natural height, the fraction ceiling, and
+    // whatever still leaves [MIN_DETAILS_HEIGHT_DP] for the details area — so
+    // the action row and transport bar below the video are on screen without
+    // any scrolling on a normal phone (a 9:16 Reel used to eat ~72% of the
+    // screen and pushed the controls into a sliver that had to be scrolled to).
+    // The floor keeps the video itself from collapsing into a thin strip on a
+    // very short screen.
+    val height = minOf(
+        natural,
+        screenHeight * MAX_PORTRAIT_VIDEO_FRACTION,
+        screenHeight - MIN_DETAILS_HEIGHT_DP
+    ).coerceAtLeast(screenHeight * MIN_PORTRAIT_VIDEO_FRACTION)
     return Modifier.fillMaxWidth().height(height)
 }
 
@@ -2154,11 +2214,28 @@ private const val BACKDROP_WIDTH_PX = 720
 
 /**
  * Ceiling for a portrait Instagram video box, as a fraction of the screen
- * height. High enough that a full-width 9:16 Reel keeps ~88% of the available
- * width (instead of the narrow letterbox it used to sit in) while the action
- * row and transport bar below it always retain scrollable room.
+ * height. The box stays FULL WIDTH (the media is letterboxed inside it, never
+ * cropped), but it is deliberately kept to a bit over half the screen so the
+ * details area below — action row + transport bar — stays visible without
+ * scrolling. Only tall media (9:16 Reels) ever hit this cap; square and
+ * landscape posts are shorter than it by their own ratio.
  */
-private const val MAX_PORTRAIT_VIDEO_FRACTION = 0.72f
+private const val MAX_PORTRAIT_VIDEO_FRACTION = 0.55f
+
+/**
+ * How much of the screen the details area below an Instagram video must always
+ * keep, regardless of the media's ratio. This is the guarantee behind the
+ * fraction above: on a short screen the video gives up more height rather than
+ * pushing the controls off-screen.
+ */
+private val MIN_DETAILS_HEIGHT_DP = 300.dp
+
+/**
+ * Floor for the Instagram video box, as a fraction of the screen height — an
+ * extreme ratio (or a very short screen) must never shrink the video into an
+ * unusable strip.
+ */
+private const val MIN_PORTRAIT_VIDEO_FRACTION = 0.3f
 
 /** If no player event arrives within this window, surface an error card. */
 private const val LOAD_TIMEOUT_MS = 25_000L

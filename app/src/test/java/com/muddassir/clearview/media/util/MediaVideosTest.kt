@@ -58,6 +58,38 @@ class MediaVideosTest {
         assertEquals(list, MediaVideos.decode(MediaVideos.encode(list)))
     }
 
+    /**
+     * LEGACY-CACHE HEAL: caches written before the Instagram thumbnail fix hold
+     * an empty poster for every Reel (the RSS bridges' only image URL —
+     * `…/media?size=l` — was being discarded as "an HTML permalink"). Reading
+     * such a cache must produce a WORKING poster straight away, not a blank
+     * card that stays blank until the feed happens to be re-fetched.
+     */
+    @Test
+    fun `decode heals an instagram reel that was cached without a poster`() {
+        val reel = MediaVideo(
+            videoId = "ig_Db-PNm1Miby",
+            title = "reel",
+            channelId = "ig_maherzainofficial",
+            channelName = "Maher Zain",
+            publishedAtEpochMillis = 100L,
+            thumbnailUrl = "",
+            platform = com.muddassir.clearview.media.model.MediaPlatform.INSTAGRAM,
+            instagramType = com.muddassir.clearview.media.model.InstagramMediaType.VIDEO,
+            instagramUrl = "https://www.instagram.com/p/Db-PNm1Miby/"
+        )
+        val decoded = MediaVideos.decode(MediaVideos.encode(listOf(reel)))
+        assertEquals(
+            "https://www.instagram.com/p/Db-PNm1Miby/media/?size=l",
+            decoded.single().thumbnailUrl
+        )
+        // A YouTube video with no thumbnail is NOT given an Instagram URL.
+        val noThumbYoutube = MediaVideos.decode(
+            MediaVideos.encode(listOf(video("yt1", 100L).copy(thumbnailUrl = "")))
+        )
+        assertEquals("", noThumbYoutube.single().thumbnailUrl)
+    }
+
     @Test
     fun `decode handles blank and corrupt input`() {
         assertEquals(emptyList<MediaVideo>(), MediaVideos.decode(null))

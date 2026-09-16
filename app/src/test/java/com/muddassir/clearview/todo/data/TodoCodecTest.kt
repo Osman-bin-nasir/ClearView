@@ -1,6 +1,7 @@
 package com.muddassir.clearview.todo.data
 
 import com.muddassir.clearview.todo.model.ReminderConfig
+import com.muddassir.clearview.todo.model.TodoBehavior
 import com.muddassir.clearview.todo.model.TodoEvent
 import com.muddassir.clearview.todo.model.TodoItem
 import com.muddassir.clearview.todo.model.TodoPriority
@@ -470,6 +471,34 @@ class TodoCodecTest {
         )
         assertTrue(reset.any { it.id == "tried" })
         assertTrue(TodoCodec.canCompleteOn(reset.first { it.id == "active" }, TODAY, atMinutes(TODAY, 12 * 60)))
+    }
+
+    @Test
+    fun `attempted can be toggled back to unattempted`() {
+        val at = 1_700_000_000_000L
+        val base = item("toggle", start = TODAY, end = TODAY).copy(
+            behavior = TodoBehavior.ATTEMPTED
+        )
+
+        // Marking it attempted is idempotent (no duplicate events piling up).
+        val once = TodoCodec.attempted(listOf(base), base.id, TODAY, at)
+        val twice = TodoCodec.attempted(once, base.id, TODAY, at + 1)
+        assertEquals(1, once.first().events.size)
+        assertEquals(1, twice.first().events.size)
+        assertTrue(TodoCodec.isAttemptedOn(twice.first(), TODAY))
+
+        // Unattempting clears the state AND the partial credit it earned.
+        val cleared = TodoCodec.unattempted(twice, base.id, TODAY, at + 2)
+        assertFalse(TodoCodec.isAttemptedOn(cleared.first(), TODAY))
+        assertEquals(0f, TodoStats.occurrenceScore(cleared.first(), TODAY), 0.001f)
+        // Only THAT day's attempted state is cleared.
+        val multi = TodoCodec.attempted(
+            TodoCodec.attempted(listOf(base), base.id, TODAY.minusDays(1), at),
+            base.id, TODAY, at
+        )
+        val dayBeforeCleared = TodoCodec.unattempted(multi, base.id, TODAY, at)
+        assertTrue(TodoCodec.isAttemptedOn(dayBeforeCleared.first(), TODAY.minusDays(1)))
+        assertFalse(TodoCodec.isAttemptedOn(dayBeforeCleared.first(), TODAY))
     }
 
     @Test

@@ -120,10 +120,40 @@ object TodoStats {
         /** Past uncompleted days this week of expired (archived) todos. */
         val missedCount: Int,
         /** The most productive 2-hour window (startHour..startHour+2) this week, or null below 2 completions. */
-        val mostProductiveWindow: Pair<Int, Int>?
+        val mostProductiveWindow: Pair<Int, Int>?,
+        /** Σ priority weights of the week's due occurrences (Mon..today). */
+        val dueWeight: Float,
+        /** Σ priority weights × behaviour credit actually earned. */
+        val doneWeight: Float,
+        /**
+         * Occurrences this week that earned PARTIAL credit — marked attempted,
+         * or a TIME todo with some minutes logged but not finished. They are
+         * why [creditRate] can exceed [rate].
+         */
+        val partialOccurrences: Int
     ) {
         val percent: Int get() = if (due > 0) (rate * 100).toInt() else 0
         val rate: Float get() = if (due > 0) (completed.toFloat() / due).coerceIn(0f, 1f) else 0f
+
+        /**
+         * PROGRESS, not just completions: the same priority-weighted,
+         * behaviour-aware credit the score uses (full for a completion, half
+         * for an attempt, minutes/target for a time todo), as a 0..1 fraction
+         * of the week's due weight.
+         *
+         * This is the number the dashboard's ring draws, so marking a todo
+         * attempted or logging part of a target VISIBLY moves the headline —
+         * not just the 100-point score — which is the whole point of partial
+         * credit. [rate] stays the raw completed/due figure.
+         */
+        val creditRate: Float
+            get() = if (dueWeight > 0f) (doneWeight / dueWeight).coerceIn(0f, 1f) else rate
+
+        /** [creditRate] as whole percent. */
+        val creditPercent: Int get() = (creditRate * 100).roundToInt()
+
+        /** True when partial work has lifted the progress above raw completions. */
+        val hasPartialCredit: Boolean get() = creditRate > rate + 0.0001f
     }
 
     /** One day of the calendar / month grid: raw due + completed counts. */
@@ -249,27 +279,37 @@ object TodoStats {
             .takeIf { it.isNotEmpty() }
             ?.let { it.average().toFloat() }
 
+        // Priority-weighted, behaviour-aware credit for the applicable week
+        // (Mon..today): the numerator/denominator behind BOTH the visible
+        // progress ring and the score's completion component, so partial work
+        // (attempted, part of a time target) counts in the same way everywhere.
+        // Hoisted out of the breakdown block because creditRate needs it even
+        // when the breakdown itself is empty.
+        var dueWeight = 0f
+        var doneWeight = 0f
+        var partialOccurrences = 0
+        days.filter { it.date <= today }.forEach { day ->
+            items.forEach { item ->
+                if (TodoCodec.isActiveOn(item, day.date)) {
+                    val weight = item.priority.scoreWeight
+                    dueWeight += weight
+                    val credit = creditFraction(item, day.date)
+                    doneWeight += weight * credit
+                    // Partial = something earned, but not a completed occurrence.
+                    if (credit > 0f && credit < 1f && !TodoCodec.completedOn(item, day.date)) {
+                        partialOccurrences++
+                    }
+                }
+            }
+        }
+
         // Score + breakdown (only meaningful with at least one due todo). v3:
         // priority-weighted completion (a single bucket — no separate
         // High-Priority that can sit empty and auto-pass), a volume component
         // measured against the user's own recent baseline, and components that
         // are EXCLUDED — with the remaining weights rescaled — when their
         // denominator is 0. Nothing ever earns points for being empty.
-        val breakdown = if (due > 0) {
-            var dueWeight = 0f
-            var doneWeight = 0f
-            days.filter { it.date <= today }.forEach { day ->
-                items.forEach { item ->
-                    if (TodoCodec.isActiveOn(item, day.date)) {
-                        val weight = item.priority.scoreWeight
-                        dueWeight += weight
-                        // Behaviour-aware credit (completed 1.0×, ATTEMPTED 0.5×,
-                        // TIME minutes/target) — the same ratio as occurrenceScore,
-                        // so attempted and time-based todos lift the weekly score too.
-                        doneWeight += weight * creditFraction(item, day.date)
-                    }
-                }
-            }
+        val breakdown = if (due > 0 && dueWeight > 0f) {
             val completionRaw = W_COMPLETION * (doneWeight / dueWeight)
             val consistencyRaw = if (daysWithDue > 0) {
                 W_CONSISTENCY * (activeDays.toFloat() / daysWithDue)
@@ -347,7 +387,10 @@ object TodoStats {
             remainingToday = remainingToday,
             overdueCount = overdue,
             missedCount = missed,
-            mostProductiveWindow = mostProductiveWindow(items, mondayOf(today).toEpochDay(), mondayOf(today).plusDays(7).toEpochDay())
+            mostProductiveWindow = mostProductiveWindow(items, mondayOf(today).toEpochDay(), mondayOf(today).plusDays(7).toEpochDay()),
+            dueWeight = dueWeight,
+            doneWeight = doneWeight,
+            partialOccurrences = partialOccurrences
         )
     }
 
@@ -429,19 +472,41 @@ object TodoStats {
         (occurrenceScore(item, day) / BASE_POINTS).coerceIn(0f, 1f)
 
     /**
+     * Minutes logged on [day] against a TIME todo's target, as a 0..1 fraction
+     * (1.0 when no target is set — the todo then only tracks time).
+     */
+    private fun timeFraction(item: TodoItem, day: LocalDate): Float {
+        val target = item.targetDurationMinutes ?: 0
+        if (target <= 0) return 1f
+        return (TodoCodec.timeSpentOn(item, day).toFloat() / target).coerceIn(0f, 1f)
+    }
+
+    /**
      * THE score for one occurrence — every UI and summary figure must use this
-     * so they can never disagree:
-     *  - completed NORMAL    → full base points
-     *  - completed ATTEMPTED → 50% partial credit
-     *  - completed TIME      → (minutes logged / target).coerceIn(0,1) × base
+     * so they can never disagree. Partial states are always worth SOMETHING
+     * (never 0), because effort spent is real progress even when the todo was
+     * not ticked off:
+     *  - completed NORMAL         → full base points
+     *  - completed ATTEMPTED      → 50% partial credit
+     *  - completed TIME           → (minutes logged / target).coerceIn(0,1) × base,
+     *                               with a 50% floor (ticking it off at all is
+     *                               worth something even with no time logged)
      *  - attempted, not completed → 50% partial credit
-     *  - otherwise           → 0
+     *  - TIME with minutes logged → (minutes logged / target) × base, whether or
+     *    not it was completed: logging half the target earns half the points.
+     *    Ticking it off does not change the points — it changes whether the
+     *    occurrence counts as COMPLETED in the completion/consistency figures.
+     *  - TIME marked attempted    → the better of the logged-time credit and
+     *                               50%, so a worked-on session never scores 0
+     *  - otherwise                → 0
      */
     fun occurrenceScore(
         item: TodoItem,
         day: LocalDate,
         basePoints: Float = BASE_POINTS
     ): Float {
+        val attempted = TodoCodec.isAttemptedOn(item, day)
+        val minutes = TodoCodec.timeSpentOn(item, day)
         if (TodoCodec.completedOn(item, day)) {
             return when (item.behavior) {
                 TodoBehavior.NORMAL -> basePoints
@@ -449,13 +514,21 @@ object TodoStats {
                 TodoBehavior.TIME -> {
                     val target = item.targetDurationMinutes ?: 0
                     if (target <= 0) basePoints
-                    else (TodoCodec.timeSpentOn(item, day).toFloat() / target)
-                        .coerceIn(0f, 1f) * basePoints
+                    // Completing it is worth at least half, even with nothing
+                    // logged (the user asserted they did the work).
+                    else maxOf(timeFraction(item, day), 0.5f) * basePoints
                 }
             }
         }
-        if (TodoCodec.isAttemptedOn(item, day)) return basePoints * 0.5f
-        return 0f
+        return when {
+            item.behavior == TodoBehavior.ATTEMPTED && attempted -> basePoints * 0.5f
+            item.behavior == TodoBehavior.TIME -> {
+                val byTime = if (minutes > 0) timeFraction(item, day) else 0f
+                val byAttempt = if (attempted) 0.5f else 0f
+                maxOf(byTime, byAttempt) * basePoints
+            }
+            else -> 0f
+        }
     }
 
     /** Total earned points across [from]..[to] (inclusive). */

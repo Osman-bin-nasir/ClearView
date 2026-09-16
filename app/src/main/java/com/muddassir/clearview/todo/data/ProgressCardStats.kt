@@ -38,10 +38,56 @@ object ProgressCardStats {
     /** The time ranges the card can summarize. */
     enum class RangeKind { TODAY, WEEK, MONTH, DAY90, CUSTOM }
 
+    /**
+     * The contribution grid always carries at least this many week columns, so
+     * even a one-day range renders a real GitHub-style heatmap (twelve weeks of
+     * surrounding context) instead of a single lonely square.
+     */
+    const val HEATMAP_MIN_WEEKS = 12
+
+    /**
+     * The most week columns the grid carries — 53, a full rolling year. Longer
+     * ranges shrink the cells to fit rather than dropping days from the card.
+     */
+    const val HEATMAP_MAX_WEEKS = 53
+
+    /**
+     * The achievement grade a range earns. Exactly one per card, derived from
+     * [CardStats.score]: the card renders its accent colour, its glow and its
+     * badge from it, so a Diamond period and a Bronze one are visibly different
+     * objects rather than the same poster with a different number on it.
+     */
+    enum class Tier { BRONZE, SILVER, GOLD, PLATINUM, DIAMOND }
+
+    /**
+     * The [Tier] for a 0..100 [score], or null when the range has no data at all
+     * — there is nothing to grade there, so the card keeps its neutral accent
+     * rather than handing out a Bronze for an empty week.
+     *
+     * The bands widen at the bottom on purpose. The score's four components
+     * (priority-weighted completion, consistency, streak, timeliness) make 90+
+     * genuinely rare, so the top two tiers have to be earned across a whole
+     * period rather than won on one good afternoon.
+     */
+    fun tierFor(score: Int?): Tier? = when {
+        score == null -> null
+        score >= 90 -> Tier.DIAMOND
+        score >= 75 -> Tier.PLATINUM
+        score >= 55 -> Tier.GOLD
+        score >= 35 -> Tier.SILVER
+        else -> Tier.BRONZE
+    }
+
     /** One day of the activity strip / heatmap grid. */
     enum class Heat { DONE, PARTIAL, MISSED, NONE }
 
-    data class HeatDay(val date: LocalDate, val heat: Heat)
+    /**
+     * One day of the strip/grid. [done] is how many occurrences were completed
+     * that day — the raw number behind the GitHub-style intensity scale, so the
+     * card can shade a day by how much was actually achieved rather than only
+     * by its [Heat] verdict.
+     */
+    data class HeatDay(val date: LocalDate, val heat: Heat, val done: Int = 0)
 
     /** One distinct todo title with its occurrence counts inside the range. */
     data class UniqueTodo(
@@ -113,7 +159,15 @@ object ProgressCardStats {
         val mostRepeated: UniqueTodo?,
         /** Completed occurrences per day of the range (1 decimal at display). */
         val avgPerDay: Float,
-        /** Daily activity for the strip (≤7) or heatmap grid (>7), oldest first. */
+        /**
+         * Daily activity for the contribution grid: a Monday-aligned window
+         * ENDING AT [to], carrying the range's own week span but never fewer
+         * than [HEATMAP_MIN_WEEKS] columns and never more than
+         * [HEATMAP_MAX_WEEKS]. It can open before [from] — those leading days
+         * are context for the graph, never part of the range's numbers — and
+         * always ends at [to], so the days after it in the final week are
+         * simply absent. Oldest first.
+         */
         val heatmap: List<HeatDay>,
         /** True when the range has fewer than 7 days carrying any data. */
         val firstWeek: Boolean
@@ -306,7 +360,7 @@ object ProgressCardStats {
                 .roundToInt().coerceIn(0, 100)
         }
 
-        val heatmap = buildHeatmap(items, kind, from, to, todayEpoch, nowMillis)
+        val heatmap = buildHeatmap(items, from, to, todayEpoch, nowMillis)
 
         return CardStats(
             from = from,
@@ -336,46 +390,62 @@ object ProgressCardStats {
     }
 
     /**
-     * Daily activity: a strip when the range is ≤7 days (every day), otherwise
-     * the trailing min(90, range length) days for the heatmap grid. All days
-     * are ≤ today, so there are no "scheduled" cells — only done, partial,
-     * missed and no-activity.
+     * Daily activity for the card's contribution grid — a Monday-aligned window
+     * ENDING AT [to] that carries the range's own week span, floored at
+     * [HEATMAP_MIN_WEEKS] columns and capped at [HEATMAP_MAX_WEEKS].
+     *
+     * The floor is what gives every range a GitHub-shaped graph: a 7-day range
+     * still fills the same twelve columns as a 90-day one, with the days before
+     * [from] left as context (the card draws them as empty, never as "missed").
+     * The window is measured in whole weeks from the Monday of [from]'s week, so
+     * the floor can only ever ADD context ahead of the range — never drop a
+     * scored day. Only the [HEATMAP_MAX_WEEKS] cap can push the window past
+     * [from], and those oldest days are then simply absent from the graph rather
+     * than mislabelled as outside the range. All days are ≤ today, so there are
+     * no "scheduled" cells — only done, partial, missed and no-activity.
      */
     private fun buildHeatmap(
         items: List<TodoItem>,
-        kind: RangeKind,
         from: LocalDate,
         to: LocalDate,
         todayEpoch: Long,
         nowMillis: Long
     ): List<HeatDay> {
-        val len = to.toEpochDay() - from.toEpochDay() + 1
-        val days = if (len <= 7) {
-            (0L until len).map { from.plusDays(it) }
-        } else {
-            val n = minOf(90L, len).toInt()
-            (0L until n.toLong()).map { to.minusDays(n.toLong() - 1L - it) }
+        // Monday of the week that contains a date (dayOfWeek.value is 1 = Monday).
+        fun weekStart(date: LocalDate): LocalDate =
+            date.minusDays((date.dayOfWeek.value - 1).toLong())
+
+        val lastMonday = weekStart(to)
+        val spanWeeks = (lastMonday.toEpochDay() - weekStart(from).toEpochDay()) / 7 + 1
+        val weeks = spanWeeks
+            .coerceIn(HEATMAP_MIN_WEEKS.toLong(), HEATMAP_MAX_WEEKS.toLong())
+            .toInt()
+        val days = ArrayList<LocalDate>(weeks * 7)
+        var day = lastMonday.minusWeeks((weeks - 1).toLong())
+        while (!day.isAfter(to)) {
+            days += day
+            day = day.plusDays(1)
         }
         return days.map { date ->
             val epoch = date.toEpochDay()
-            var anyCompleted = false
+            var done = 0
             var anyUncompletedDue = false
             var anyDue = false
             items.forEach { item ->
                 if (TodoCodec.isActiveOn(item, date)) {
                     anyDue = true
-                    if (TodoCodec.completedOn(item, date)) anyCompleted = true
+                    if (TodoCodec.completedOn(item, date)) done++
                     else if (epoch <= todayEpoch) anyUncompletedDue = true
                 }
             }
             val heat = when {
-                anyCompleted && anyUncompletedDue -> Heat.PARTIAL
-                anyCompleted -> Heat.DONE
+                done > 0 && anyUncompletedDue -> Heat.PARTIAL
+                done > 0 -> Heat.DONE
                 anyDue && (epoch < todayEpoch ||
                     items.any { TodoCodec.intervalEnded(it, date, nowMillis) }) -> Heat.MISSED
                 else -> Heat.NONE
             }
-            HeatDay(date, heat)
+            HeatDay(date, heat, done)
         }
     }
 

@@ -58,19 +58,87 @@ class InstagramEmbedPayloadTest {
     }
 
     @Test
-    fun `an html permalink in the media slot is rejected`() {
-        // The broken thumbnail/media URLs some RSS bridges hand out — decoding
-        // them can only ever fail, so they must not be played or fetched.
+    fun `the media endpoint is not playable but IS an image`() {
+        // Instagram's media endpoint is NOT a stream...
         assertNull(
             InstagramEmbedPayload.parseProbe(
                 probe("https://www.instagram.com/p/Db-PNm1Miby/media?size=l")
             )
         )
-        assertTrue(
+        // ...but it is also NOT a web page: it redirects straight to the post's
+        // JPEG. Rejecting it as "an HTML permalink" is exactly why Reels had no
+        // thumbnail, so it must be allowed through to the image loader.
+        assertFalse(
             InstagramEmbedPayload.isNonImageUrl(
                 "https://www.instagram.com/p/Db-PNm1Miby/media?size=l"
             )
         )
+        // A real Instagram page (no /media) is still rejected.
+        assertTrue(InstagramEmbedPayload.isNonImageUrl("https://www.instagram.com/p/Db-PNm1Miby/"))
+        assertTrue(InstagramEmbedPayload.isNonImageUrl("https://www.instagram.com/maherzainofficial/"))
+    }
+
+    @Test
+    fun `the media endpoint url is built from the shortcode`() {
+        assertEquals(
+            "https://www.instagram.com/p/Db-PNm1Miby/media/?size=l",
+            InstagramEmbedPayload.mediaEndpointUrl("Db-PNm1Miby")
+        )
+        assertNull(InstagramEmbedPayload.mediaEndpointUrl(""))
+        assertNull(InstagramEmbedPayload.mediaEndpointUrl("not a code"))
+    }
+
+    @Test
+    fun `expiring meta cdn urls are replaced by the stable media endpoint`() {
+        // Measured on the device: this exact shape (signed with oh/oe) answered
+        // 403 "URL signature mismatch" once its signature expired, which left
+        // an Instagram carousel tile permanently blank.
+        val expired = "https://scontent.cdninstagram.com/v/t51.82787-15/755351982_186038.jpg" +
+            "?stp=dst-jpegr_e35_p1080x1080_tt6&_nc_cat=103&ig_cache_key=Mz&oh=00_AQJj&oe=6AB01466"
+        assertTrue(InstagramEmbedPayload.isExpiringImageUrl(expired))
+        assertEquals(
+            "https://www.instagram.com/p/Db-PNm1Miby/media/?size=l",
+            InstagramEmbedPayload.thumbnailFor("Db-PNm1Miby", expired)
+        )
+        // The same URL WITHOUT a signature is still a usable still, and is kept.
+        val unsigned = "https://scontent.cdninstagram.com/v/a.jpg?x=1"
+        assertFalse(InstagramEmbedPayload.isExpiringImageUrl(unsigned))
+        assertEquals(unsigned, InstagramEmbedPayload.thumbnailFor("Db-PNm1Miby", unsigned))
+        // Non-Meta hosts are never treated as expiring (we can't know better).
+        assertFalse(InstagramEmbedPayload.isExpiringImageUrl("https://i.ytimg.com/vi/a/hq.jpg?oh=1"))
+        assertEquals(
+            "https://i.ytimg.com/vi/a/hq.jpg?oh=1",
+            InstagramEmbedPayload.thumbnailFor("Db-PNm1Miby", "https://i.ytimg.com/vi/a/hq.jpg?oh=1")
+        )
+    }
+
+    @Test
+    fun `thumbnailFor keeps real images and falls back to the endpoint`() {
+        // A real, non-expiring CDN thumbnail is kept verbatim.
+        assertEquals(
+            "https://scontent.cdninstagram.com/v/a.jpg?x=1",
+            InstagramEmbedPayload.thumbnailFor("Db-PNm1Miby", "https://scontent.cdninstagram.com/v/a.jpg?x=1")
+        )
+        // The bridge's slash-less endpoint form is normalised (one hop less).
+        assertEquals(
+            "https://www.instagram.com/p/Db-PNm1Miby/media/?size=l",
+            InstagramEmbedPayload.thumbnailFor(
+                "Db-PNm1Miby",
+                "https://www.instagram.com/p/Db-PNm1Miby/media?size=l"
+            )
+        )
+        // No thumbnail at all -> the post's own endpoint, so a Reel is never
+        // left posterless.
+        assertEquals(
+            "https://www.instagram.com/p/Db-PNm1Miby/media/?size=l",
+            InstagramEmbedPayload.thumbnailFor("Db-PNm1Miby", "")
+        )
+        assertEquals(
+            "https://www.instagram.com/p/Db-PNm1Miby/media/?size=l",
+            InstagramEmbedPayload.thumbnailFor("Db-PNm1Miby", null)
+        )
+        // Nothing to work with at all.
+        assertEquals("", InstagramEmbedPayload.thumbnailFor("", ""))
     }
 
     @Test

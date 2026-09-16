@@ -9,6 +9,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import com.muddassir.clearview.media.model.InstagramMediaType
 import com.muddassir.clearview.ui.ContentHubState
 import androidx.compose.animation.core.LinearEasing
@@ -38,6 +39,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -52,19 +55,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.PlaylistAdd
-import androidx.compose.material.icons.filled.PlaylistPlay
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -93,22 +94,28 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import kotlin.math.roundToInt
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -153,6 +160,13 @@ import kotlinx.coroutines.withContext
 
 /** Label for the device-import source shown in playlist contexts. */
 private const val DEVICE_SOURCE_LABEL = "From device"
+
+/**
+ * Vertical gap between playlist editor rows. Shared by the LazyColumn's
+ * arrangement and the drag-to-reorder maths, so one slot is exactly
+ * (row height + this gap) and the two can never drift apart.
+ */
+private val PLAYLIST_ROW_GAP = 8.dp
 
 /**
  * Media tab — a Subscriptions-style feed:
@@ -577,15 +591,25 @@ fun MediaTab(
     }
     // Shorts are YouTube Shorts only — an Instagram Reel is a NORMAL video
     // here (same row, resume and Continue Watching as any YouTube video).
-    val shorts = searchResults.filter { it.isShortsEntry }
+    // The three splits below are REMEMBERED: the feed recomposes on every
+    // watch-progress revision, download tick and playback state change, and
+    // without a remember each one re-scanned (and re-sorted) the whole feed
+    // every time — pure wasted work while scrolling.
+    val shorts = remember(searchResults) { searchResults.filter { it.isShortsEntry } }
     // YouTube long videos first, then Instagram Reels/videos directly below
     // them (stable sort preserves each group's newest-first order). Still
     // Instagram posts are NOT video rows — they get the square grid below.
-    val longs = searchResults.filterNot { it.isShortsEntry || it.isInstagramImage }
-        .sortedBy { if (it.isInstagram) 1 else 0 }
+    val longs = remember(searchResults) {
+        searchResults.filterNot { it.isShortsEntry || it.isInstagramImage }
+            .sortedBy { if (it.isInstagram) 1 else 0 }
+    }
     // Instagram photo / carousel posts: small square tiles in a grid AFTER the
     // Videos section (tap one to expand the post full screen).
-    val instagramPosts = searchResults.filter { it.isInstagramImage }
+    val instagramPosts = remember(searchResults) { searchResults.filter { it.isInstagramImage } }
+    // The grid rows, chunked ONCE per posts list (chunked() allocates a new
+    // list of lists on every call, and an unstable row list defeats
+    // LazyColumn's item reuse).
+    val instagramPostRows = remember(instagramPosts) { instagramPosts.chunked(3) }
     // The offline tracks behind the feed's audio entries, and the queue a
     // playlist context plays them with (its own audio entries, in order) — this
     // is what the audio player's Next / Previous buttons walk.
@@ -770,17 +794,27 @@ fun MediaTab(
             // channel + search-scoped downloads in Downloads view, the feed
             // search results otherwise.
             val resultCount = if (downloadsFilter) {
-                val q = searchQuery.trim()
-                val channelName = channels.firstOrNull { it.channelId == filterChannelId }?.displayName
-                AudioDownloads.items.value.count { item ->
-                    val inChannel = filterChannelId == null ||
-                        item.channelId == filterChannelId ||
-                        (item.channelId.isBlank() && channelName != null &&
-                            item.channelName.equals(channelName, ignoreCase = true))
-                    inChannel &&
-                        (q.isEmpty() || item.title.contains(q, ignoreCase = true) ||
-                            item.channelName.contains(q, ignoreCase = true)) &&
-                        matchesDownloadSource(item, downloadsSourceFilter)
+                // Remembered: this re-scans the whole download library with
+                // string matching, and the feed recomposes constantly (watch
+                // progress ticks, download state, playback state). None of that
+                // changes the count, so there is no reason to recompute it.
+                val downloads = AudioDownloads.items.value
+                remember(
+                    downloads, searchQuery, filterChannelId, channels, downloadsSourceFilter
+                ) {
+                    val q = searchQuery.trim()
+                    val channelName =
+                        channels.firstOrNull { it.channelId == filterChannelId }?.displayName
+                    downloads.count { item ->
+                        val inChannel = filterChannelId == null ||
+                            item.channelId == filterChannelId ||
+                            (item.channelId.isBlank() && channelName != null &&
+                                item.channelName.equals(channelName, ignoreCase = true))
+                        inChannel &&
+                            (q.isEmpty() || item.title.contains(q, ignoreCase = true) ||
+                                item.channelName.contains(q, ignoreCase = true)) &&
+                            matchesDownloadSource(item, downloadsSourceFilter)
+                    }
                 }
             } else searchResults.size
             FeedHeader(
@@ -1069,7 +1103,7 @@ fun MediaTab(
                                     showingCached = feedCached
                                 )
                             }
-                            items(instagramPosts.chunked(3)) { row ->
+                            items(instagramPostRows, key = { row -> row.first().videoId }) { row ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -4096,7 +4130,7 @@ private fun PlaylistChip(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                Icons.Filled.PlaylistPlay,
+                Icons.AutoMirrored.Filled.PlaylistPlay,
                 contentDescription = null,
                 tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
                 else MaterialTheme.colorScheme.primary,
@@ -4300,7 +4334,7 @@ private fun PlaylistsSheet(
             item {
                 OutlinedButton(onClick = onAddByUrl, modifier = Modifier.fillMaxWidth()) {
                     Icon(
-                        Icons.Filled.PlaylistAdd,
+                        Icons.AutoMirrored.Filled.PlaylistAdd,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
@@ -4380,7 +4414,7 @@ private fun ImportedPlaylistRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                Icons.Filled.PlaylistPlay,
+                Icons.AutoMirrored.Filled.PlaylistPlay,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(20.dp)
@@ -4424,72 +4458,102 @@ private fun UserPlaylistRow(
     onRename: () -> Unit,
     onDelete: () -> Unit
 ) {
+    // NOTE: deliberately NOT Card(onClick = onOpen). A clickable Card swallowed
+    // the ⋮ beside it — the row opened the playlist instead of the menu — so the
+    // open target is the content area only, and the menu is its sibling.
     Card(
-        onClick = onOpen,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
+            Row(
                 modifier = Modifier
-                    .size(44.dp)
+                    .weight(1f)
                     .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClickLabel = "Open playlist") { onOpen() },
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                val first = playlist.videos.firstOrNull()
-                if (first != null) {
-                    RemoteImage(url = first.thumbnailUrl, modifier = Modifier.fillMaxSize())
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Filled.PlaylistPlay,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(22.dp)
-                        )
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                ) {
+                    val first = playlist.videos.firstOrNull()
+                    if (first != null) {
+                        RemoteImage(url = first.thumbnailUrl, modifier = Modifier.fillMaxSize())
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.PlaylistPlay,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = playlist.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${playlist.videos.size} video${if (playlist.videos.size == 1) "" else "s"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = playlist.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "${playlist.videos.size} video${if (playlist.videos.size == 1) "" else "s"}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            // Rename + delete consume their own taps (never open the playlist).
-            IconButton(onClick = onRename, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    Icons.Filled.Edit,
-                    contentDescription = "Rename playlist",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
-                Icon(
-                    Icons.Filled.Delete,
-                    contentDescription = "Delete playlist",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
+            // ONE overflow per row instead of a pencil + a bin repeated down
+            // the list: with several playlists those two icons were the same
+            // glyph over and over, which read as visual noise. Rename and
+            // Delete now live behind this single ⋮ (their taps are consumed by
+            // the menu, so the row's own click still just opens the playlist).
+            Box {
+                var menuOpen by remember(playlist.id) { mutableStateOf(false) }
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = "Playlist options",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Rename") },
+                        onClick = { menuOpen = false; onRename() },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                        onClick = { menuOpen = false; onDelete() },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    )
+                }
             }
         }
     }
@@ -4585,7 +4649,7 @@ private fun PlaylistEditorSheet(
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                text = "${playlist.videos.size} video${if (playlist.videos.size == 1) "" else "s"} · use ↑↓ to reorder",
+                text = "${playlist.videos.size} video${if (playlist.videos.size == 1) "" else "s"} · drag the grip to reorder",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -4600,7 +4664,7 @@ private fun PlaylistEditorSheet(
             } else {
                 LazyColumn(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(PLAYLIST_ROW_GAP)
                 ) {
                     // key: (videoId, audio flag) — a playlist can hold BOTH a
                     // video and its downloaded audio; LazyColumn keys must be
@@ -4613,8 +4677,7 @@ private fun PlaylistEditorSheet(
                             video = video,
                             index = index,
                             count = playlist.videos.size,
-                            onMoveUp = { onMove(index, index - 1) },
-                            onMoveDown = { onMove(index, index + 1) },
+                            onMove = onMove,
                             onRemove = { onRemove(video) }
                         )
                     }
@@ -4625,7 +4688,7 @@ private fun PlaylistEditorSheet(
                 onClick = onAddVideos,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(Icons.Filled.PlaylistAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Add videos")
             }
@@ -4633,83 +4696,149 @@ private fun PlaylistEditorSheet(
     }
 }
 
-/** One ordered row in the playlist editor: thumbnail, title, reorder + remove. */
+/**
+ * One ordered row in the playlist editor: thumbnail, title, drag grip + remove.
+ *
+ * Reordering is direct manipulation rather than two arrow buttons: dragging
+ * the grip lifts the row off the list (it follows the finger, drawn above its
+ * neighbours) and dropping it commits a single move to the slot the finger is
+ * over. The move is applied on drop, not continuously, so the row is never
+ * translated and re-laid-out in the same frame it is being dragged — that
+ * keeps the finger-to-row mapping exact and makes the drop deterministic.
+ */
 @Composable
 private fun PlaylistEditorRow(
     video: MediaVideo,
     index: Int,
     count: Int,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
+    onMove: (from: Int, to: Int) -> Unit,
     onRemove: () -> Unit
 ) {
+    // The index this row *currently* occupies (a swap above it shifts it).
+    val currentIndex by rememberUpdatedState(index)
+    val currentCount by rememberUpdatedState(count)
+
+    var dragging by remember { mutableStateOf(false) }
+    // Measured, not assumed: rows are two-line titles at some font scales.
+    var rowHeightPx by remember { mutableFloatStateOf(0f) }
+    var dragPx by remember { mutableFloatStateOf(0f) }
+    // Index the row was at when the drag started — the "from" of the move.
+    var startIndex by remember { mutableIntStateOf(0) }
+
+    val density = LocalDensity.current
+    // Rows are spaced by ROW_GAP in the LazyColumn, so one slot is the row
+    // height plus that gap; the finger must cover a whole slot to move one step.
+    val slotPx = rowHeightPx + with(density) { PLAYLIST_ROW_GAP.toPx() }
+
+    // The grip is the gesture target and it must NOT move while dragging:
+    // translating the node that reads the pointer would feed the translation
+    // back into the next drag delta. The translation lives on the inner Surface
+    // instead, so deltas stay exactly 1:1 with the finger.
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .zIndex(if (dragging) 1f else 0f)
+            .pointerInput(video.videoId, video.isOfflineAudio) {
+                detectDragGestures(
+                    onDragStart = {
+                        dragging = true
+                        startIndex = currentIndex
+                        dragPx = 0f
+                    },
+                    onDragEnd = {
+                        val last = currentCount - 1
+                        val target = if (slotPx > 0f) {
+                            (startIndex + (dragPx / slotPx).roundToInt()).coerceIn(0, last)
+                        } else startIndex
+                        dragging = false
+                        dragPx = 0f
+                        if (target != startIndex) onMove(startIndex, target)
+                    },
+                    onDragCancel = {
+                        dragging = false
+                        dragPx = 0f
+                    },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        if (slotPx > 0f) {
+                            // Keep the row inside the list: it cannot be dragged
+                            // above the first or below the last slot.
+                            val down = (currentCount - 1 - startIndex) * slotPx
+                            val up = -startIndex * slotPx
+                            dragPx = (dragPx + amount.y).coerceIn(up, down)
+                        }
+                    }
+                )
+            }
+    ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        modifier = Modifier.fillMaxWidth()
+        color = if (dragging) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f)
+            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        shadowElevation = if (dragging) 8.dp else 0.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .onSizeChanged { if (rowHeightPx == 0f) rowHeightPx = it.height.toFloat() }
+            .graphicsLayer { translationY = dragPx }
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .clip(RoundedCornerShape(8.dp))
+            Row(
+                modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                RemoteImage(url = video.thumbnailUrl, modifier = Modifier.fillMaxSize())
-            }
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = video.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Audio entries (downloaded audio / device imports) get a
-                    // small note so "audio of X" is distinguishable from
-                    // "video X" — a playlist can hold both.
-                    if (video.isOfflineAudio || video.videoId.startsWith("device-")) {
-                        Icon(
-                            Icons.Filled.MusicNote,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                    }
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                ) {
+                    RemoteImage(url = video.thumbnailUrl, modifier = Modifier.fillMaxSize())
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "${index + 1} · ${video.channelName.ifBlank { "YouTube" }}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
+                        text = video.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                }
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                Row {
-                    IconButton(onClick = onMoveUp, enabled = index > 0, modifier = Modifier.size(32.dp)) {
-                        Icon(
-                            Icons.Filled.ArrowUpward,
-                            contentDescription = "Move up",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Audio entries (downloaded audio / device imports) get a
+                        // small note so "audio of X" is distinguishable from
+                        // "video X" — a playlist can hold both.
+                        if (video.isOfflineAudio || video.videoId.startsWith("device-")) {
+                            Icon(
+                                Icons.Filled.MusicNote,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = "${index + 1} · ${video.channelName.ifBlank { "YouTube" }}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
-                    IconButton(onClick = onMoveDown, enabled = index < count - 1, modifier = Modifier.size(32.dp)) {
-                        Icon(
-                            Icons.Filled.ArrowDownward,
-                            contentDescription = "Move down",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
                 }
-                IconButton(onClick = onRemove, modifier = Modifier.size(32.dp)) {
+                // The grip is the only reorder control left: the arrow pair it
+                // replaced needed one tap per position and gave each row two
+                // more small tap targets.
+                Box(
+                    modifier = Modifier.size(44.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.DragHandle,
+                        contentDescription = "Drag to reorder",
+                        tint = if (dragging) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                IconButton(onClick = onRemove, modifier = Modifier.size(36.dp)) {
                     Icon(
                         Icons.Filled.Delete,
                         contentDescription = "Remove from playlist",
@@ -4924,7 +5053,7 @@ internal fun AddToPlaylistSheet(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    Icons.Filled.PlaylistPlay,
+                                    Icons.AutoMirrored.Filled.PlaylistPlay,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(22.dp)
@@ -4960,7 +5089,7 @@ internal fun AddToPlaylistSheet(
                 onClick = onCreateNew,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(Icons.Filled.PlaylistAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(newLabel)
             }

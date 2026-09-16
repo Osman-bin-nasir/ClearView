@@ -226,6 +226,16 @@
     }, 250);
   }
 
+  // Logs which host the embed actually loaded from (see the `host` option in
+  // createPlayer). CONSOLE lines are surfaced to logcat by the WebView, so a
+  // regression to the Shorts-serving host is visible in a plain logcat dump.
+  function logEmbedHost() {
+    try {
+      var f = player ? player.getIframe() : null;
+      if (f && f.src) console.log('EMBED_SRC ' + f.src);
+    } catch (e) {}
+  }
+
   function onWindowResize() {
     applySize();
     startSizeWatchdog();
@@ -391,6 +401,24 @@
       height: h,
       videoId: videoId,
       playerVars: vars,
+      // ── ROOT-CAUSE FIX: the Shorts embed ────────────────────────────────
+      // new YT.Player() without `host` loads its iframe from
+      // https://www.youtube.com/embed/<id>. For a Shorts-ELIGIBLE video that
+      // URL does NOT return the normal player — it returns YouTube's Shorts
+      // REEL player, which paints the Shorts label, a like button and a
+      // share button over the video. Verified against the two servers with
+      // the same id:
+      //   youtube.com/embed/<short>            -> "reelActionBarViewModel",
+      //      "REEL_PLAYER_OVERLAY_STYLE_SHORTS", "SHORTS_LIKE", "SHORTS_SHARE",
+      //      "YOUTUBE_SHORTS_OUTLINE_WITH_TEXT_24" (the "YouTube Shorts" logo)
+      //   youtube-nocookie.com/embed/<short>   -> none of those; the standard
+      //      embed, byte-for-byte the same shape as a normal video's page.
+      // `host` is the IFrame API's OFFICIAL privacy-enhanced-mode switch —
+      // not a CSS hack and no cross-origin DOM manipulation — so a Short now
+      // plays in the SAME normal player as every other video and the app's
+      // own controls are the only chrome the user sees. The video id is
+      // still what we pass (a /shorts/ URL is never loaded as a page).
+      host: 'https://www.youtube-nocookie.com',
       events: {
         onReady: function (e) {
           notify('onReady');
@@ -427,6 +455,10 @@
           // into the real viewport even if the initial snapshot was 0.
           applySize();
           logSizes('READY');
+          // Host evidence in logcat: the embed must load from the
+          // privacy-enhanced host (normal player for Shorts too), never from
+          // youtube.com/embed (which serves the Shorts reel player).
+          logEmbedHost();
         },
         onStateChange: function (e) {
           if (e.data === 1) {
@@ -513,11 +545,28 @@
   }
 
   // ── Re-seek on the current source (Continue Watching / Watch Again) ──
+  // "Resume here": seeks AND starts playback.
   function seekToSeconds(seconds) {
     try {
       if (!player || typeof player.seekTo !== 'function') return;
       player.seekTo(seconds, true);
       if (typeof player.playVideo === 'function') { try { player.playVideo(); } catch (e) {} }
+    } catch (e) { console.error(e); }
+  }
+
+  // ── Timeline scrubbing (the app's own transport bar) ────────────────
+  // "Move the playhead": seekTo() alone never changes the play state, so a
+  // paused video stays paused and a playing one keeps playing — the same
+  // behaviour as dragging YouTube's own scrubber. Deliberately does NOT call
+  // playVideo() (that is seekToSeconds above).
+  function scrubTo(seconds) {
+    try {
+      if (!player || typeof player.seekTo !== 'function') return;
+      if (!isFinite(seconds) || seconds < 0) return;
+      player.seekTo(seconds, true);
+      // Land the bar on the requested position immediately instead of waiting
+      // for the next 1 s timeline tick.
+      reportTimeline(true);
     } catch (e) { console.error(e); }
   }
 

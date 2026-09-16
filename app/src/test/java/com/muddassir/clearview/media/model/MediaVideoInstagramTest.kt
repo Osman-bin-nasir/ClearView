@@ -82,6 +82,35 @@ class MediaVideoInstagramTest {
     }
 
     @Test
+    fun `a carousel with a video slide is still a post, not a video`() {
+        // The Videos section is for Reels and videos ONLY. A carousel that
+        // happens to contain a video clip belongs with the posts — the type
+        // decides, not the presence of an mp4.
+        val carousel = video(
+            videoId = "ig_Car42",
+            platform = MediaPlatform.INSTAGRAM,
+            type = InstagramMediaType.CAROUSEL,
+            mediaUrl = "https://scontent.cdninstagram.com/v/clip.mp4"
+        )
+        assertFalse(carousel.isInstagramVideo)
+        assertTrue(carousel.isInstagramImage)
+    }
+
+    @Test
+    fun `an untyped instagram item falls back to its media url`() {
+        // Older caches and manually added posts carry no type at all: a real
+        // progressive video URL is then the only evidence available.
+        val untypedVideo = video(
+            videoId = "ig_Unknown1",
+            platform = MediaPlatform.INSTAGRAM,
+            mediaUrl = "https://scontent.cdninstagram.com/v/clip.mp4"
+        )
+        val untypedStill = video(videoId = "ig_Unknown2", platform = MediaPlatform.INSTAGRAM)
+        assertTrue(untypedVideo.isInstagramVideo)
+        assertTrue(untypedStill.isInstagramImage)
+    }
+
+    @Test
     fun `an untagged ig_ id is still recognised as instagram`() {
         // Older caches / manually added posts only carry the id prefix.
         val legacy = video(videoId = "ig_Legacy1", type = InstagramMediaType.REEL)

@@ -4,6 +4,7 @@ import com.muddassir.clearview.media.data.InstagramRssParser
 import com.muddassir.clearview.media.model.InstagramMediaType
 import com.muddassir.clearview.media.model.MediaPlatform
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -120,6 +121,63 @@ class InstagramRssParserTest {
         assertEquals("ig_C_mno345", photo.videoId)
         assertEquals(InstagramMediaType.IMAGE, photo.instagramType)
         assertEquals("https://cdn.example.com/atom_photo.jpg", photo.thumbnailUrl)
+    }
+
+    /**
+     * The EXACT shape the public RSS bridges emit for a Reel: a `<video>`
+     * whose `<source src>` is EMPTY and whose `poster` is Instagram's media
+     * endpoint. The poster used to be thrown away as "an HTML permalink",
+     * which is why Reels showed no thumbnail — and the missing mp4 is why the
+     * app must resolve the stream itself.
+     */
+    private val bridgeReelAndVideoCarouselFeed = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <title>maherzainofficial - Instagram</title>
+          <entry>
+            <title>Merhaba!</title>
+            <link rel="alternate" type="text/html" href="https://www.instagram.com/p/Db-PNm1Miby/"/>
+            <id>https://www.instagram.com/p/Db-PNm1Miby/</id>
+            <published>2026-09-13T10:00:00Z</published>
+            <content type="html"><![CDATA[<video controls><source src="" poster="https://www.instagram.com/p/Db-PNm1Miby/media?size=l" type="video/mp4"><img src="https://www.instagram.com/p/Db-PNm1Miby/media?size=l" alt=""></video><br>Merhaba!]]></content>
+          </entry>
+          <entry>
+            <title>A post with a video slide</title>
+            <link rel="alternate" type="text/html" href="https://www.instagram.com/p/C_car777/"/>
+            <id>https://www.instagram.com/p/C_car777/</id>
+            <published>2026-09-12T10:00:00Z</published>
+            <content type="html"><![CDATA[<img src="https://scontent.cdninstagram.com/v/one.jpg"/><img src="https://scontent.cdninstagram.com/v/two.jpg"/><video controls><source src="https://scontent.cdninstagram.com/v/clip.mp4"></video>]]></content>
+          </entry>
+        </feed>
+    """.trimIndent()
+
+    @Test
+    fun `a bridge reel gets a usable poster instead of no thumbnail`() {
+        val result = InstagramRssParser.parse(bridgeReelAndVideoCarouselFeed, "maherzainofficial")
+        assertNotNull(result)
+        val reel = result!!.items[0]
+        // The poster is normalised to Instagram's canonical endpoint, which
+        // 301/302-redirects to the post's real JPEG on Meta's CDN.
+        assertEquals(
+            "https://www.instagram.com/p/Db-PNm1Miby/media/?size=l",
+            reel.thumbnailUrl
+        )
+        assertEquals(InstagramMediaType.VIDEO, reel.instagramType)
+        // ...which means it is a VIDEO row item, not a still post.
+        assertTrue(reel.isInstagramVideo)
+        assertFalse(reel.isInstagramImage)
+    }
+
+    @Test
+    fun `a multi-image post stays a post even when it carries a video`() {
+        val result = InstagramRssParser.parse(bridgeReelAndVideoCarouselFeed, "maherzainofficial")
+        assertNotNull(result)
+        val carousel = result!!.items[1]
+        assertEquals(InstagramMediaType.CAROUSEL, carousel.instagramType)
+        // A carousel belongs in POSTS, never in the Videos section — even
+        // though one of its slides is a video clip.
+        assertFalse(carousel.isInstagramVideo)
+        assertTrue(carousel.isInstagramImage)
     }
 
     @Test

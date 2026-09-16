@@ -50,13 +50,31 @@ object MediaVideos {
                     if (videoId.isBlank()) {
                         null
                     } else {
+                        val instagramUrl = o.optString("instagramUrl", "").takeIf { it.isNotBlank() }
+                        val isInstagram = o.optString("platform", "YOUTUBE") == "INSTAGRAM" ||
+                            videoId.startsWith("ig_")
                         MediaVideo(
                             videoId = videoId,
                             title = o.optString("title", ""),
                             channelId = o.optString("channelId", ""),
                             channelName = o.optString("channelName", ""),
                             publishedAtEpochMillis = o.optLong("publishedAt", 0L),
-                            thumbnailUrl = o.optString("thumbnailUrl", ""),
+                            // LEGACY-CACHE HEAL: caches written before the
+                            // thumbnail fix hold an empty poster for every
+                            // Reel (the RSS bridges' only image URL was being
+                            // thrown away). Deriving the poster from the
+                            // shortcode on READ means an existing library shows
+                            // its Reels immediately, instead of staying blank
+                            // until the feed happens to be re-fetched.
+                            thumbnailUrl = if (isInstagram) {
+                                com.muddassir.clearview.media.data.InstagramEmbedPayload
+                                    .thumbnailFor(
+                                        videoId.removePrefix("ig_"),
+                                        o.optString("thumbnailUrl", "")
+                                    )
+                            } else {
+                                o.optString("thumbnailUrl", "")
+                            },
                             viewCount = o.optLong("viewCount", 0L),
                             isShort = o.optBoolean("isShort", false),
                             isLive = o.optBoolean("isLive", false),
@@ -65,7 +83,7 @@ object MediaVideos {
                             platform = runCatching { com.muddassir.clearview.media.model.MediaPlatform.valueOf(o.optString("platform","YOUTUBE")) }.getOrDefault(com.muddassir.clearview.media.model.MediaPlatform.YOUTUBE),
                             instagramType = o.optString("instagramType","").takeIf { it.isNotBlank() }?.let { runCatching { com.muddassir.clearview.media.model.InstagramMediaType.valueOf(it) }.getOrNull() },
                             mediaUrl = o.optString("mediaUrl", "").takeIf { it.isNotBlank() },
-                            instagramUrl = o.optString("instagramUrl", "").takeIf { it.isNotBlank() }
+                            instagramUrl = instagramUrl
                         )
                     }
                 } catch (e: Exception) {

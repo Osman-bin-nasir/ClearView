@@ -421,6 +421,10 @@
     <string name="todo_card_week_label">This week</string>
     <string name="todo_card_completed_of">%1$d of %2$d completed</string>
     <string name="todo_card_ring_caption">of %1$d</string>
+    <plurals name="todo_card_partial_credit">
+        <item quantity="one">incl. partial credit · %1$d attempted</item>
+        <item quantity="other">incl. partial credit · %1$d attempted</item>
+    </plurals>
     <string name="todo_card_left_today">%1$d left today</string>
     <string name="todo_card_all_done_today">All done today</string>
     <string name="todo_card_none">—</string>
@@ -467,7 +471,7 @@
     <string name="todo_filter_attempted">Attempted</string>
     <string name="todo_heatmap_title">Productivity heatmap</string>
     <!-- Subtitle under the heatmap title: what the grid covers. -->
-    <string name="todo_heatmap_subtitle">Last 6 months · one square per day, darker means more completed</string>
+    <string name="todo_heatmap_subtitle">Last 12 months · one square per day, darker means more completed</string>
     <string name="todo_heatmap_cell_desc">%1$s · %2$d completed · %3$d%% of the day\'s plan</string>
     <string name="todo_heatmap_less">Less</string>
     <string name="todo_heatmap_more">More</string>
@@ -513,16 +517,31 @@
     <string name="progress_card_score_value">%1$d / 100</string>
     <string name="progress_card_completion">%1$d%% completion</string>
     <string name="progress_card_empty_range">No todos due in this period</string>
-    <string name="progress_card_created">Created</string>
     <string name="progress_card_completed">Completed</string>
+    <string name="progress_card_best_streak">Best streak</string>
+    <string name="progress_card_current_streak">Current streak</string>
+    <string name="progress_card_perfect_days">Perfect days</string>
     <string name="progress_card_incomplete">Incomplete</string>
-    <string name="progress_card_streak">Streak</string>
-    <string name="progress_card_active">Active Days</string>
+    <!-- Achievement tiers the Progress Card is graded into (its accent colour,
+         glow and star badge all come from whichever one the range earns). -->
+    <string name="progress_card_tier_bronze">Bronze</string>
+    <string name="progress_card_tier_silver">Silver</string>
+    <string name="progress_card_tier_gold">Gold</string>
+    <string name="progress_card_tier_platinum">Platinum</string>
+    <string name="progress_card_tier_diamond">Diamond</string>
+    <string name="progress_card_activity">ACTIVITY</string>
+    <string name="progress_card_legend_less">Less</string>
+    <string name="progress_card_legend_more">More</string>
+    <string name="progress_card_summary_high">Outstanding period — you finished nearly everything you planned.</string>
+    <string name="progress_card_summary_good">Solid period — most of your planned work got done.</string>
+    <string name="progress_card_summary_mixed">Mixed period — about half of your planned work got done.</string>
+    <string name="progress_card_summary_low">Most of what you planned is still open — keep going.</string>
+    <string name="progress_card_best_day">Best day: %1$s · %2$d completed</string>
+    <string name="progress_card_active">Active days</string>
     <string name="progress_card_days">days</string>
-    <string name="progress_card_first_week">First week of tracking</string>
+    <string name="progress_card_first_week">First week of tracking — keep it up</string>
     <string name="progress_card_made_with">Made with %1$s</string>
-    <string name="progress_card_story">Story · 1080×1920</string>
-    <string name="progress_card_square">Square · 1080×1080</string>
+    <string name="progress_card_story">Story card · 1080 × 1920</string>
     <string name="progress_card_save">Save to gallery</string>
     <string name="progress_card_share">Share</string>
     <string name="progress_card_regenerate">Regenerate</string>

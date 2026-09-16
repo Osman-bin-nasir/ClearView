@@ -3,9 +3,11 @@ package com.muddassir.clearview.todo.data
 import com.muddassir.clearview.todo.model.TodoItem
 import com.muddassir.clearview.todo.model.TodoPriority
 import com.muddassir.clearview.todo.model.TodoType
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -299,40 +301,62 @@ class ProgressCardStatsTest {
 
     // ── Heatmap ─────────────────────────────────────────────────────
 
+    /** The heat verdict for one day of the grid window (by date, not index). */
+    private fun ProgressCardStats.CardStats.heatOn(date: LocalDate): ProgressCardStats.Heat =
+        heatmap.first { it.date == date }.heat
+
+    /** The grid window for a range, optionally custom. */
+    private fun window(
+        kind: ProgressCardStats.RangeKind,
+        from: LocalDate? = null
+    ): List<ProgressCardStats.HeatDay> = ProgressCardStats.compute(
+        emptyList(), kind, today,
+        customFrom = from, customTo = if (from != null) today else null
+    ).heatmap
+
     @Test
-    fun `heatmap week is the seven trailing days with done missed and none cells`() {
+    fun `heatmap window is Monday-aligned and ends on the range's last day`() {
+        val stats = ProgressCardStats.compute(
+            listOf(item("q")), ProgressCardStats.RangeKind.WEEK, today
+        )
+        assertEquals(DayOfWeek.MONDAY, stats.heatmap.first().date.dayOfWeek)
+        assertEquals(today, stats.heatmap.last().date)
+        // 12 week columns, so a 7-day range still draws a real contribution
+        // graph instead of a single row of seven boxes.
+        assertEquals(ProgressCardStats.HEATMAP_MIN_WEEKS * 7 - 4, stats.heatmap.size)
+    }
+
+    @Test
+    fun `heatmap week reflects done missed and still-pending days`() {
         val items = listOf(
             item("q", completions = mapOf(monday to millis(), monday.plusDays(1) to millis()))
         )
         val stats = ProgressCardStats.compute(
             items, ProgressCardStats.RangeKind.WEEK, today
         )
-        assertEquals(7, stats.heatmap.size)
-        assertEquals(today.minusDays(6), stats.heatmap.first().date)
-        assertEquals(today, stats.heatmap.last().date)
         // Before the todo starts (Thu..Sun) there is no activity.
-        assertTrue(stats.heatmap.take(4).all { it.heat == ProgressCardStats.Heat.NONE })
+        assertEquals(ProgressCardStats.Heat.NONE, stats.heatOn(today.minusDays(6)))
         // Mon and Tue were completed, today is pending → NONE (not missed yet).
-        assertEquals(ProgressCardStats.Heat.DONE, stats.heatmap[4].heat)
-        assertEquals(ProgressCardStats.Heat.DONE, stats.heatmap[5].heat)
-        assertEquals(ProgressCardStats.Heat.NONE, stats.heatmap[6].heat)
+        assertEquals(ProgressCardStats.Heat.DONE, stats.heatOn(monday))
+        assertEquals(ProgressCardStats.Heat.DONE, stats.heatOn(monday.plusDays(1)))
+        assertEquals(ProgressCardStats.Heat.NONE, stats.heatOn(today))
     }
 
     @Test
-    fun `heatmap marks missed days red and today pending gray`() {
+    fun `heatmap marks missed days missed and today pending`() {
         // Permanent daily todo with NO completions: Mon+Tue were missed,
         // today is still actionable.
         val stats = ProgressCardStats.compute(
             listOf(item("q", completions = emptyMap())),
             ProgressCardStats.RangeKind.WEEK, today
         )
-        assertEquals(ProgressCardStats.Heat.MISSED, stats.heatmap[4].heat)
-        assertEquals(ProgressCardStats.Heat.MISSED, stats.heatmap[5].heat)
-        assertEquals(ProgressCardStats.Heat.NONE, stats.heatmap[6].heat)
+        assertEquals(ProgressCardStats.Heat.MISSED, stats.heatOn(monday))
+        assertEquals(ProgressCardStats.Heat.MISSED, stats.heatOn(monday.plusDays(1)))
+        assertEquals(ProgressCardStats.Heat.NONE, stats.heatOn(today))
     }
 
     @Test
-    fun `heatmap marks partially completed days amber`() {
+    fun `heatmap marks partially completed days partial`() {
         val items = listOf(
             item("a", completions = mapOf(monday to millis())),
             item("b", completions = emptyMap())
@@ -340,42 +364,99 @@ class ProgressCardStatsTest {
         val stats = ProgressCardStats.compute(
             items, ProgressCardStats.RangeKind.WEEK, today
         )
-        assertEquals(ProgressCardStats.Heat.PARTIAL, stats.heatmap[4].heat)
+        assertEquals(ProgressCardStats.Heat.PARTIAL, stats.heatOn(monday))
     }
 
     @Test
-    fun `month heatmap is thirty days and day90 is ninety`() {
-        val month = ProgressCardStats.compute(
-            emptyList(), ProgressCardStats.RangeKind.MONTH, today
-        )
-        assertEquals(30, month.heatmap.size)
-        assertEquals(today.minusDays(29), month.heatmap.first().date)
+    fun `every range covers at least twelve week columns and a year at most`() {
+        // Short ranges are floored to the same twelve columns, so the card
+        // always gets a graph rather than a stub.
+        assertEquals(ProgressCardStats.HEATMAP_MIN_WEEKS * 7 - 4, window(ProgressCardStats.RangeKind.WEEK).size)
+        assertEquals(ProgressCardStats.HEATMAP_MIN_WEEKS * 7 - 4, window(ProgressCardStats.RangeKind.MONTH).size)
 
-        val day90 = ProgressCardStats.compute(
-            emptyList(), ProgressCardStats.RangeKind.DAY90, today
+        // A 90-day range needs 14 columns, so it keeps its own span.
+        val day90 = window(ProgressCardStats.RangeKind.DAY90)
+        assertTrue(
+            "90 days lost its own span: ${day90.size}",
+            day90.size > ProgressCardStats.HEATMAP_MIN_WEEKS * 7
         )
-        assertEquals(90, day90.heatmap.size)
-        assertEquals(today.minusDays(89), day90.heatmap.first().date)
+        assertEquals(DayOfWeek.MONDAY, day90.first().date.dayOfWeek)
+        // The window opens on the Monday of the range's own first week, so no
+        // scored day can fall off the front of the graph.
+        assertTrue(day90.first().date.isBefore(today.minusDays(89)))
+        assertTrue(day90.first().date.isAfter(today.minusDays(96)))
     }
 
     @Test
-    fun `custom heatmap is capped at ninety days`() {
+    fun `custom heatmap keeps its span up to a full rolling year`() {
         val from = today.minusDays(200)
         val stats = ProgressCardStats.compute(
             emptyList(), ProgressCardStats.RangeKind.CUSTOM, today,
             customFrom = from, customTo = today
         )
-        assertEquals(90, stats.heatmap.size)
+        // 200 days fit inside the one-year cap, whole weeks back from the Monday
+        // of the range's own first week — so the window can never open after
+        // the range starts and drop a scored day.
+        assertTrue(stats.heatmap.first().date.isBefore(from))
+        assertTrue(stats.heatmap.first().date.isAfter(from.minusDays(7)))
         assertEquals(today, stats.heatmap.last().date)
+
+        // Anything longer is clamped to 53 week columns.
+        val long = ProgressCardStats.compute(
+            emptyList(), ProgressCardStats.RangeKind.CUSTOM, today,
+            customFrom = today.minusDays(500), customTo = today
+        )
+        assertEquals(ProgressCardStats.HEATMAP_MAX_WEEKS * 7 - 4, long.heatmap.size)
+        assertEquals(today, long.heatmap.last().date)
     }
 
     @Test
-    fun `today heatmap is a single day`() {
+    fun `today heatmap still covers the context window`() {
         val stats = ProgressCardStats.compute(
             listOf(item("q")), ProgressCardStats.RangeKind.TODAY, today
         )
-        assertEquals(1, stats.heatmap.size)
-        assertEquals(ProgressCardStats.Heat.NONE, stats.heatmap.first().heat)
+        assertEquals(ProgressCardStats.HEATMAP_MIN_WEEKS * 7 - 4, stats.heatmap.size)
+        assertEquals(today, stats.heatmap.last().date)
+        assertEquals(ProgressCardStats.Heat.NONE, stats.heatOn(today))
+    }
+
+    // ── Tier ────────────────────────────────────────────────────────
+
+    @Test
+    fun `tier grades a score and refuses to grade an empty range`() {
+        // Nothing to grade → no tier at all (the card keeps its neutral accent).
+        assertNull(ProgressCardStats.tierFor(null))
+
+        assertEquals(ProgressCardStats.Tier.BRONZE, ProgressCardStats.tierFor(0))
+        assertEquals(ProgressCardStats.Tier.BRONZE, ProgressCardStats.tierFor(34))
+        assertEquals(ProgressCardStats.Tier.SILVER, ProgressCardStats.tierFor(35))
+        assertEquals(ProgressCardStats.Tier.SILVER, ProgressCardStats.tierFor(54))
+        assertEquals(ProgressCardStats.Tier.GOLD, ProgressCardStats.tierFor(55))
+        assertEquals(ProgressCardStats.Tier.GOLD, ProgressCardStats.tierFor(74))
+        assertEquals(ProgressCardStats.Tier.PLATINUM, ProgressCardStats.tierFor(75))
+        assertEquals(ProgressCardStats.Tier.PLATINUM, ProgressCardStats.tierFor(89))
+        assertEquals(ProgressCardStats.Tier.DIAMOND, ProgressCardStats.tierFor(90))
+        assertEquals(ProgressCardStats.Tier.DIAMOND, ProgressCardStats.tierFor(100))
+    }
+
+    @Test
+    fun `a range is graded only when it has something to grade`() {
+        // Nothing due → no score, and therefore no tier: a card can never be
+        // handed a Bronze for an empty week.
+        val empty = ProgressCardStats.compute(
+            emptyList(), ProgressCardStats.RangeKind.WEEK, today
+        )
+        assertNull(empty.score)
+        assertNull(ProgressCardStats.tierFor(empty.score))
+
+        // As soon as the range carries data it grades — the card never renders a
+        // score without a tier badge beside it.
+        val scored = ProgressCardStats.compute(
+            listOf(item("q", completions = mapOf(monday to millis()))),
+            ProgressCardStats.RangeKind.WEEK, today
+        )
+        assertNotNull(scored.score)
+        assertNotNull("a scored range must be graded", ProgressCardStats.tierFor(scored.score))
     }
 
     // ── First week & score ──────────────────────────────────────────

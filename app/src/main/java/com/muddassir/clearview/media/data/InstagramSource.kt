@@ -315,7 +315,14 @@ class WebProfileInstagramSource : InstagramSource {
                                     channelId = channelId,
                                     channelName = fullName,
                                     publishedAtEpochMillis = if (takenAt > 0) takenAt else (System.currentTimeMillis() - (i * 3600_000L)),
-                                    thumbnailUrl = displayUrl,
+                                    // `display_url` is usually a real CDN image;
+                                    // when it is missing the post's own media
+                                    // endpoint supplies the still, so a Reel
+                                    // is never left without a poster.
+                                    thumbnailUrl = InstagramEmbedPayload.thumbnailFor(
+                                        shortcode,
+                                        displayUrl
+                                    ),
                                     viewCount = views,
                                     isShort = isVideo,
                                     isLive = false,
