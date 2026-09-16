@@ -1,0 +1,122 @@
+# Render Blueprint — ClearView Good Post backend (§41).
+#
+# Deploy: Render Dashboard → New → Blueprint → pick this repo.
+#
+# `rootDir: server` is essential: the repository root is the Android project,
+# and the backend lives in this subdirectory.
+#
+# Region `frankfurt` is deliberate. Neon is in AWS eu-central-1 and S3 will be
+# too (M3), so putting the service in the same region keeps database round
+# trips — of which every authenticated request makes one — on the same
+# continent as both.
+
+services:
+  - type: web
+    name: clearview-goodpost-api
+    runtime: node
+    # `free` has no pre-deploy command support and spins the service down when
+    # idle (the first request after a pause takes ~30s). `starter` is required
+    # for the migration step below to run at all.
+    plan: starter
+    region: frankfurt
+    branch: main
+    rootDir: server
+    buildCommand: npm ci && npm run build
+    # Runs after build, before the new version takes traffic, so the schema is
+    # always ahead of the code that needs it. Migration files are immutable and
+    # checksummed, and each runs in its own transaction under a session
+    # advisory lock, so re-running this on every deploy is safe and a no-op
+    # once the schema is current.
+    #
+    # It connects over DATABASE_URL_DIRECT, not DATABASE_URL: a transaction
+    # pooler can route the statements of one migration to different backends,
+    # which breaks both DDL and session-level advisory locks.
+    preDeployCommand: npm run migrate:prod
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # ── Fixed ────────────────────────────────────────────────────────
+      - key: NODE_ENV
+        value: production
+      # Do NOT set PORT — Render injects it and the app reads it.
+
+      # ── Secrets Render generates, so nobody has to invent them ────────
+      # In production src/env.ts refuses to boot on a placeholder, a short
+      # value, or JWT_SECRET == JWT_REFRESH_SECRET — so these must be real and
+      # distinct. generateValue guarantees that, and means no human ever
+      # writes them down or pastes them anywhere they could leak.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: PHONE_HASH_PEPPER
+        generateValue: true
+
+      # ── You must supply these (Render prompts once, then stores them) ──
+      # `sync: false` means the value is NOT in git.
+      #
+      # Neon → Dashboard → Connection string. Take BOTH:
+      #   the pooled host (contains "-pooler") → DATABASE_URL
+      #   the direct host (no "-pooler")       → DATABASE_URL_DIRECT
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_DIRECT
+        sync: false
+
+      # Your Render service URL, e.g. https://clearview-goodpost-api.onrender.com
+      # Set this AFTER the first deploy, once Render has assigned the hostname.
+      # It only feeds shareable links (§6), which arrive in M2, so a placeholder
+      # here does not break anything today.
+      - key: PUBLIC_BASE_URL
+        sync: false
+
+      # Firebase Admin service account (Firebase → Project settings →
+      # Service accounts → Generate new private key). All three are REQUIRED:
+      # production refuses to boot with PHONE_VERIFY_MODE=firebase and no
+      # credentials, because phone sign-in would otherwise be unable to verify
+      # any token.
+      #
+      # FIREBASE_PRIVATE_KEY must keep its `\n` escapes on a single line. The
+      # helper in scripts/set-firebase-env.mjs produces exactly that.
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+
+      # ── Non-secret tuning, safe in git ────────────────────────────────
+      - key: GOODPOST_HISTORY_DAYS
+        value: 90
+      - key: PURGE_GRACE_DAYS
+        value: 30
+      # §19. env.ts refuses `false` in production; keeping it here makes the
+      # enforcement visible in the dashboard rather than implied by a default.
+      - key: BAN_PHONE_ENFORCED
+        value: true
+      - key: PHONE_VERIFY_MODE
+        value: firebase
+      - key: FCM_ENABLED
+        value: true
+      - key: RETENTION_JOB_ENABLED
+        value: true
+      - key: RETENTION_CRON
+        value: '*/30 * * * *'
+
+      # ── Deliberately ABSENT, and why ──────────────────────────────────
+      #
+      # CORS_ORIGINS — the Android client sends no Origin header, so it needs
+      #   no CORS at all. src/app.ts already refuses browsers outright when
+      #   this is empty, which is the correct posture until a browser client
+      #   exists. The admin dashboard's real origin goes here in M6. Never "*".
+      #
+      # AWS_* — media storage is M3. Adding them now would make Render prompt
+      #   for credentials nothing uses, and src/env.ts already defaults
+      #   AWS_REGION to eu-central-1 with an empty bucket. M3 re-adds:
+      #   AWS_REGION, AWS_S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+      #
+      # RATE_LIMIT_MAX / AUTH_RATE_LIMIT_MAX — left to their code defaults on
+      #   purpose rather than duplicated here, so there is one source of truth.
+      #   The effective values are printed at boot by describeActiveLimits().
+      #   Add them in the Render dashboard to tune a limit without a deploy.

@@ -624,4 +624,49 @@ This video cannot be played inside the app.</string>
     <string name="widget_phone_screen_time_na">Screen time: —</string>
     <string name="widget_phone_limit_start">START</string>
     <string name="widget_phone_limit_description">Shows today\'s screen time and starts a phone limit countdown with the remaining time</string>
+
+    <!-- Good Post (§4). Its own tab behind an account; nothing else in ClearView
+         requires one, and every string here is only ever shown inside it. -->
+    <string name="goodpost_tab">Good Post</string>
+    <string name="goodpost_subtitle">Channels you follow</string>
+    <string name="goodpost_not_configured_title">Good Post is not set up in this build</string>
+    <string name="goodpost_not_configured_note">No backend URL is configured, so sign-in cannot work. Set goodPostBaseUrl in gradle.properties, or build with -PgoodPostBaseUrl=https://your-server, and rebuild.</string>
+    <string name="goodpost_retry">Retry</string>
+    <string name="goodpost_phone_title">Your mobile number</string>
+    <string name="goodpost_phone_note">We\'ll text a code to confirm it. Include the country code.</string>
+    <string name="goodpost_phone_label">Mobile number</string>
+    <string name="goodpost_phone_placeholder">+923001234567</string>
+    <string name="goodpost_send_code">Send code</string>
+    <string name="goodpost_code_title">Enter the code</string>
+    <string name="goodpost_code_note">Sent to %1$s</string>
+    <string name="goodpost_code_label">Verification code</string>
+    <string name="goodpost_verify">Verify</string>
+    <string name="goodpost_change_number">Use a different number</string>
+    <string name="goodpost_register_title">Create your account</string>
+    <string name="goodpost_register_note">Your number is confirmed. Add a name and email — neither is ever shown to other Good Post users.</string>
+    <string name="goodpost_name_label">Name</string>
+    <string name="goodpost_email_label">Email</string>
+    <string name="goodpost_create_account">Create account</string>
+    <string name="goodpost_signed_in_title">You\'re signed in</string>
+    <string name="goodpost_signed_in_note">You have no channels yet. Channels, posts and Discover arrive next.</string>
+    <string name="goodpost_offline_note">Showing your saved session — the server could not be reached.</string>
+    <string name="goodpost_sign_out">Sign out</string>
+    <string name="goodpost_working">Working…</string>
+    <string name="goodpost_privacy_note">Your number and email stay private. Other Good Post users never see them — only your name.</string>
+
+    <string name="goodpost_error_invalid_phone">Enter the number in international format, starting with + and the country code.</string>
+    <string name="goodpost_error_phone_banned">This mobile number is blocked from Good Post.</string>
+    <string name="goodpost_error_account_banned">This account has been permanently banned, so you cannot sign in to Good Post.</string>
+    <string name="goodpost_error_account_suspended">This account is suspended. Contact support if you think this is a mistake.</string>
+    <string name="goodpost_error_rate_limited">Too many codes requested for this number. Try again in about an hour.</string>
+    <string name="goodpost_error_otp_locked">Too many failed attempts. Request a new code later.</string>
+    <string name="goodpost_error_invalid_code">That code is not correct. Check the message and try again.</string>
+    <string name="goodpost_error_sms_quota">This device has hit the limit for verification codes. Try again later.</string>
+    <string name="goodpost_error_verification_failed">We could not confirm that number. Try again.</string>
+    <string name="goodpost_error_email_taken">That email address is already in use. Try another, or go back and sign in.</string>
+    <string name="goodpost_error_phone_taken">This number already has an account. Go back and sign in.</string>
+    <string name="goodpost_error_account_exists">That account already exists. Go back and sign in.</string>
+    <string name="goodpost_error_unreachable">Could not reach the server. Check your connection and try again.</string>
+    <string name="goodpost_error_server">The server had a problem. Try again in a moment.</string>
+    <string name="goodpost_error_unknown">Something went wrong. Try again.</string>
 </resources>

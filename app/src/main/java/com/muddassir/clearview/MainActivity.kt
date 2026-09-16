@@ -46,6 +46,7 @@ import com.muddassir.clearview.phonelimit.PhoneLimitCoordinator
 import com.muddassir.clearview.quran.worker.QuranWorkScheduler
 import com.muddassir.clearview.todo.data.TodoNotifier
 import com.muddassir.clearview.todo.data.TodoScheduler
+import com.muddassir.clearview.goodpost.ui.GoodPostTab
 import com.muddassir.clearview.ui.BlockTab
 import com.muddassir.clearview.ui.ContentHubTabContent
 import com.muddassir.clearview.ui.ContentHubTopBar
@@ -170,7 +171,7 @@ open class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class MainTab { QURAN, MEDIA, FEED, BLOCK }
+private enum class MainTab { QURAN, MEDIA, FEED, GOODPOST, BLOCK }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -340,6 +341,29 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                             containerColor = MaterialTheme.colorScheme.surface
                         )
                     )
+                } else if (selectedTab == MainTab.GOODPOST) {
+                    // Good Post is not a content-hub tab, so it gets a plain
+                    // header rather than the hub bar (which is player-aware and
+                    // would show playback controls for a video that is not
+                    // playing).
+                    TopAppBar(
+                        title = {
+                            Column {
+                                Text(
+                                    "ClearView",
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    stringResource(R.string.goodpost_subtitle),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        )
+                    )
                 } else {
                     // The main app has nothing to navigate back to on the content
                     // tabs; the shared top bar's player branch handles its own
@@ -383,6 +407,18 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         )
                     }
                     NavigationBarItem(
+                        selected = selectedTab == MainTab.GOODPOST,
+                        onClick = {
+                            selectedTab = MainTab.GOODPOST
+                            // Like the Block tab, Good Post replaces the hub
+                            // content entirely — a stale Haramayn overlay must
+                            // not reappear on the next content tab.
+                            hub.showHaramaynLive = false
+                        },
+                        icon = { Icon(Icons.Filled.Campaign, contentDescription = null) },
+                        label = { Text(stringResource(R.string.goodpost_tab)) }
+                    )
+                    NavigationBarItem(
                         selected = selectedTab == MainTab.BLOCK,
                         onClick = {
                             selectedTab = MainTab.BLOCK
@@ -416,6 +452,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         BlockTab(viewModel, deviceAdminLauncher)
                     }
                 }
+                MainTab.GOODPOST -> GoodPostTab()
                 else -> ContentHubTabContent(state = hub, isLandscape = landscape)
             }
         }

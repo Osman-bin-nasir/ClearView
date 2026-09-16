@@ -1,0 +1,12 @@
+# Real secrets live here and ONLY here. Never commit this file.
+.env
+.env.*
+!.env.example
+
+# Compiled output
+dist/
+dist-test/
+node_modules/
+
+# Local logs
+*.log

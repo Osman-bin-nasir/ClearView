@@ -33,6 +33,15 @@ android {
         versionName = "10.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // The Good Post backend (§41). Deliberately EMPTY by default: a build
+        // must not silently talk to a developer's machine, an expired
+        // Cloudflare tunnel, or a stale preview URL. Set it once in
+        // gradle.properties (goodPostBaseUrl=https://…) or per build with
+        // -PgoodPostBaseUrl=https://… . Until it is set, the Good Post tab
+        // says so plainly instead of failing with a confusing network error.
+        val goodPostBaseUrl = (project.findProperty("goodPostBaseUrl") as String?).orEmpty()
+        buildConfigField("String", "GOODPOST_BASE_URL", "\"$goodPostBaseUrl\"")
     }
 
     signingConfigs {
@@ -54,6 +63,17 @@ android {
             // ".debug" suffix gives the debug build its own applicationId
             // (com.muddassir.clearview.debug) — a separate app that coexists
             // with the Play Store one, each with its own data.
+            //
+            // Note which Firebase Android app this selects: the debug build
+            // registers as ".debug", so the debug SHA-1/SHA-256 belong on THAT
+            // entry in the Firebase console, not on com.muddassir.clearview.
+            // Firebase matches on package name first, then checks the cert.
+            //
+            // Deleting this line instead makes the debug build identify as
+            // com.muddassir.clearview, matching the Play Store id — needed to
+            // exercise the production Firebase Android app. That trades away
+            // the side-by-side install (INSTALL_FAILED_UPDATE_INCOMPATIBLE)
+            // and moves the debug SHA requirement to the production app.
             applicationIdSuffix = ".debug"
         }
         release {
@@ -137,4 +157,9 @@ dependencies {
 
     implementation(platform("com.google.firebase:firebase-bom:34.18.0"))
     implementation("com.google.firebase:firebase-analytics")
+    // Firebase Phone Auth for Good Post (§2, §3). Version comes from the BOM.
+    // Firebase's only job is sending and checking the SMS — account, session,
+    // ban and channel state all live on the ClearView backend, which verifies
+    // the resulting ID token with the Admin SDK before trusting a number.
+    implementation("com.google.firebase:firebase-auth")
 }
